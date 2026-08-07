@@ -1,0 +1,31 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+#root {
+  /* dvh 會跟著手機瀏覽器的網址列收合調整,用 vh 的話底部會被工具列蓋住 */
+  height: 100dvh;
+}
+
+body {
+  margin: 0;
+  background: #0b0d12;
+  color: #e6e8ee;
+  font-family: system-ui, 'Segoe UI', 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
+  /* 避免整頁下拉回彈,編輯器裡那個手感很怪 */
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  /* 橫向轉直向時 iOS 會自動放大字級 */
+  -webkit-text-size-adjust: 100%;
+}
+
+input[type='range'] {
+  accent-color: #6366f1;
+}
