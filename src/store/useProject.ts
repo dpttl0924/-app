@@ -57,6 +57,16 @@ interface ProjectState {
   rangeInMs: number
   /** null = 一直到專案結尾。這樣之後載入更長的影片時範圍會自動延伸。 */
   rangeOutMs: number | null
+  /**
+   * 待處理的切點:按下「切開」之後、還沒選邊刪掉的中間狀態。
+   *
+   * 「設起點/設訖點」對使用者來說是編輯器思維 —— 要先在腦中把範圍想清楚才知道要按哪個。
+   * 「切一刀,然後刪掉不要的那半」不用想,看著畫面做就好。
+   * 兩者的底層資料完全一樣:在 T 切開刪左邊 = rangeIn 設為 T,刪右邊 = rangeOut 設為 T。
+   */
+  splitAtMs: number | null
+  /** 上一次剪輯前的範圍。刪東西一定要能反悔。 */
+  previousRange: { inMs: number; outMs: number | null } | null
   playing: boolean
   rate: number
 
@@ -76,8 +86,10 @@ interface ProjectState {
   toggleMirror: (id: ClipId) => void
   setOffset: (id: ClipId, ms: number) => void
   nudgeOffset: (id: ClipId, deltaMs: number) => void
-  setRange: (patch: { inMs?: number; outMs?: number }) => void
-  setRangeToPlayhead: (edge: 'in' | 'out') => void
+  splitAtPlayhead: () => void
+  cancelSplit: () => void
+  deleteSegment: (side: 'left' | 'right') => void
+  undoTrim: () => void
   clearRange: () => void
   setVolume: (id: ClipId, v: number) => void
   setFps: (id: ClipId, fps: number) => void
@@ -128,10 +140,9 @@ function withDuration(clips: Record<ClipId, Clip | null>, currentMs: number) {
   const clamped = Math.min(currentMs, durationMs)
   // 時鐘是播放引擎的真實來源,只更新 store 的話引擎下一幀又會把它寫回舊值
   playbackClock.currentMs = clamped
-  return { durationMs, currentMs: clamped }
+  // 時間軸長度變了,待處理的切點就失去意義了
+  return { durationMs, currentMs: clamped, splitAtMs: null }
 }
-
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
 
 export interface PlayRange {
   startMs: number
@@ -167,6 +178,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
   durationMs: 0,
   rangeInMs: 0,
   rangeOutMs: null,
+  splitAtMs: null,
+  previousRange: null,
   playing: false,
   rate: 1,
 
@@ -303,26 +316,59 @@ export const useProject = create<ProjectState>()((set, get) => ({
     if (clip) get().setOffset(id, clip.offsetMs + deltaMs)
   },
 
-  setRange: (patch) =>
+  splitAtPlayhead: () =>
     set((s) => {
-      const end = s.rangeOutMs ?? s.durationMs
-      const inMs = clamp(patch.inMs ?? s.rangeInMs, 0, s.durationMs)
-      const outMs = clamp(patch.outMs ?? end, 0, s.durationMs)
-      if (outMs - inMs < MIN_RANGE_MS) return s
-      return {
-        rangeInMs: inMs,
-        // 訖點設在專案結尾時當成「到最後」,之後載入更長的影片才會自動延伸
-        rangeOutMs: outMs >= s.durationMs ? null : outMs,
-      }
+      const range = playRange(s)
+      // 讀時鐘而非 store.currentMs,後者是 10Hz 的節流鏡像,最多會差三格
+      const at = playbackClock.currentMs
+      // 切在邊界上等於沒切,兩邊必須都真的有東西
+      if (at <= range.startMs || at >= range.endMs) return s
+      return { splitAtMs: at }
     }),
 
-  setRangeToPlayhead: (edge) => {
-    // 讀時鐘而非 store,後者是 10Hz 的節流鏡像,最多會差三格
-    const at = playbackClock.currentMs
-    get().setRange(edge === 'in' ? { inMs: at } : { outMs: at })
+  cancelSplit: () => set({ splitAtMs: null }),
+
+  deleteSegment: (side) => {
+    const s = get()
+    const at = s.splitAtMs
+    if (at === null) return
+
+    const inMs = side === 'left' ? at : s.rangeInMs
+    const outMs = side === 'left' ? (s.rangeOutMs ?? s.durationMs) : at
+    if (outMs - inMs < MIN_RANGE_MS) return
+
+    set({
+      previousRange: { inMs: s.rangeInMs, outMs: s.rangeOutMs },
+      rangeInMs: inMs,
+      // 訖點就是專案結尾時記成 null,之後換更長的影片範圍才會自動延伸
+      rangeOutMs: outMs >= s.durationMs ? null : outMs,
+      splitAtMs: null,
+    })
+
+    // 播放頭如果落在剛剛刪掉的那段裡,把它移到剩下這段的開頭
+    const range = playRange(get())
+    const at2 = playbackClock.currentMs
+    if (at2 < range.startMs || at2 > range.endMs) get().seek(range.startMs)
   },
 
-  clearRange: () => set({ rangeInMs: 0, rangeOutMs: null }),
+  undoTrim: () => {
+    const prev = get().previousRange
+    if (!prev) return
+    set({
+      rangeInMs: prev.inMs,
+      rangeOutMs: prev.outMs,
+      previousRange: null,
+      splitAtMs: null,
+    })
+  },
+
+  clearRange: () =>
+    set((s) => ({
+      previousRange: { inMs: s.rangeInMs, outMs: s.rangeOutMs },
+      rangeInMs: 0,
+      rangeOutMs: null,
+      splitAtMs: null,
+    })),
 
   setVolume: (id, v) =>
     set((s) => {

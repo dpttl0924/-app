@@ -37,6 +37,7 @@ export function Timeline() {
   const durationMs = useProject((s) => s.durationMs)
   const rangeInMs = useProject((s) => s.rangeInMs)
   const rangeOutMs = useProject((s) => s.rangeOutMs)
+  const splitAtMs = useProject((s) => s.splitAtMs)
   const range = playRange({ rangeInMs, rangeOutMs, durationMs })
   const annotations = useProject((s) => s.annotations)
   const seek = useProject((s) => s.seek)
@@ -79,10 +80,10 @@ export function Timeline() {
       ctx.stroke()
     }
 
-    // 輸出範圍外的部分壓暗。時間軸要一眼看出「匯出會拿到哪一段」。
+    // 刪掉的部分壓暗。時間軸要一眼看出「匯出會拿到哪一段」。
     const inX = (range.startMs / durationMs) * width
     const outX = (range.endMs / durationMs) * width
-    ctx.fillStyle = 'rgba(11,13,18,.72)'
+    ctx.fillStyle = 'rgba(11,13,18,.8)'
     if (inX > 0) ctx.fillRect(0, MARKER_H, inX, height - MARKER_H)
     if (outX < width) ctx.fillRect(outX, MARKER_H, width - outX, height - MARKER_H)
 
@@ -91,7 +92,20 @@ export function Timeline() {
       ctx.fillRect(inX, MARKER_H, 2, height - MARKER_H)
       ctx.fillRect(outX - 2, MARKER_H, 2, height - MARKER_H)
     }
-  }, [clips, durationMs, width, height, laneH, range.startMs, range.endMs])
+
+    // 待處理的切點。畫得比播放頭顯眼,因為下一步就是要靠它決定刪哪邊。
+    if (splitAtMs !== null) {
+      const x = (splitAtMs / durationMs) * width
+      ctx.fillStyle = '#f59e0b'
+      ctx.fillRect(x - 1, 0, 2, height)
+      ctx.beginPath()
+      ctx.moveTo(x - 5, 0)
+      ctx.lineTo(x + 5, 0)
+      ctx.lineTo(x, 9)
+      ctx.closePath()
+      ctx.fill()
+    }
+  }, [clips, durationMs, width, height, laneH, range.startMs, range.endMs, splitAtMs])
 
   // 播放頭直接改 DOM,不觸發 React re-render(否則整個時間軸每秒重畫 60 次)。
   // 時間讀 playbackClock 而非 store —— store 是 10Hz 的節流鏡像,拿來畫會一格一格跳。

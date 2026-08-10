@@ -7,18 +7,19 @@ import { ClipPanel } from './components/ClipPanel'
 import { ModePanel } from './components/ModePanel'
 import { AlignPanel } from './components/AlignPanel'
 import { AnnotationPanel } from './components/AnnotationPanel'
-import { RangePanel } from './components/RangePanel'
+import { TrimPanel } from './components/TrimPanel'
 import { ExportPanel } from './components/ExportPanel'
 import { usePlaybackEngine } from './hooks/usePlaybackEngine'
 import { DESKTOP_QUERY, useMediaQuery } from './hooks/useMediaQuery'
 import { useProject } from './store/useProject'
 
-type TabId = 'clips' | 'mode' | 'align' | 'text' | 'export'
+type TabId = 'clips' | 'mode' | 'align' | 'trim' | 'text' | 'export'
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'clips', label: '影片' },
   { id: 'mode', label: '版面' },
   { id: 'align', label: '對齊' },
+  { id: 'trim', label: '剪輯' },
   { id: 'text', label: '標註' },
   { id: 'export', label: '匯出' },
 ]
@@ -63,13 +64,9 @@ export default function App() {
     ),
     mode: <ModePanel />,
     align: <AlignPanel />,
+    trim: <TrimPanel />,
     text: <AnnotationPanel />,
-    export: (
-      <>
-        <RangePanel />
-        <ExportPanel refs={refs} />
-      </>
-    ),
+    export: <ExportPanel refs={refs} />,
   }
 
   if (isDesktop) {
@@ -87,8 +84,8 @@ export default function App() {
             <ClipPanel id="a" />
             <ClipPanel id="b" />
             <AlignPanel />
+            <TrimPanel />
             <AnnotationPanel />
-            <RangePanel />
             <ExportPanel refs={refs} />
           </aside>
         </main>
