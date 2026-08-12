@@ -1,28 +1,42 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { playRange, useProject } from '../store/useProject'
-import { ENVELOPE_HZ, type Clip } from '../lib/types'
+import { playRange, timelineMap, useProject } from '../store/useProject'
+import { contentToProject, projectToContent, type TimelineMap } from '../lib/timeline'
+import { ENVELOPE_HZ, type Clip, type ClipId } from '../lib/types'
+import { CLIP_COLORS } from '../lib/clipColors'
 import { formatTime } from '../lib/format'
 import { playbackClock } from '../lib/playbackClock'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 
+/** 上方的刻度尺。拖這裡是移動播放頭,拖下面的色條是移動影片。 */
+const RULER_H = 22
 const LANE_GAP = 8
-const MARKER_H = 14
 /** 小螢幕上時間軸每矮 12px,舞台就多 24px —— 直式輸出時這個交換很划算 */
-const laneH_COMPACT = 30
-const laneH_WIDE = 42
-const laneHeight = (compact: boolean) => (compact ? laneH_COMPACT : laneH_WIDE)
-const totalHeight = (compact: boolean) => MARKER_H + laneHeight(compact) * 2 + LANE_GAP
+const LANE_H_COMPACT = 30
+const LANE_H_WIDE = 42
+const laneHeight = (compact: boolean) => (compact ? LANE_H_COMPACT : LANE_H_WIDE)
+const totalHeight = (compact: boolean) => RULER_H + laneHeight(compact) * 2 + LANE_GAP
+const laneTop = (index: number, laneH: number) => RULER_H + index * (laneH + LANE_GAP)
 
-const LANE_COLORS: Record<'a' | 'b', { wave: string; bg: string }> = {
-  a: { wave: '#60a5fa', bg: 'rgba(96,165,250,.12)' },
-  b: { wave: '#f472b6', bg: 'rgba(244,114,182,.12)' },
+const LANE_ORDER: ClipId[] = ['a', 'b']
+
+interface ClipDrag {
+  id: ClipId
+  startClientX: number
+  startOffsetMs: number
+  /** 拖曳期間凍結的換算比例。不凍結的話偏移一變、專案長度跟著變,手指和色條會對不上。 */
+  msPerPx: number
 }
 
 /**
- * 時間軸。波形用的是自動對齊算出來的同一份音量包絡 ——
- * 分析一次,對齊和視覺化都吃它,不重複解碼。
+ * 時間軸。
+ *
+ * 波形用的是自動對齊算出來的同一份音量包絡 —— 分析一次,對齊和視覺化都吃它。
  * 兩條波形上下對齊時,使用者一眼就能確認自動對齊到底對了沒有。
+ *
+ * 互動分兩區:上方刻度尺移動播放頭,下方色條直接拖曳該支影片的時間偏移。
+ * 偏移原本只能按 ±100ms 之類的按鈕調,但那是「輸入一個數字」的思維 ——
+ * 對齊這種看著畫面做的事,直接抓著色條移動才對。
  */
 export function Timeline() {
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -38,10 +52,26 @@ export function Timeline() {
   const rangeInMs = useProject((s) => s.rangeInMs)
   const rangeOutMs = useProject((s) => s.rangeOutMs)
   const splitAtMs = useProject((s) => s.splitAtMs)
-  const range = playRange({ rangeInMs, rangeOutMs, durationMs })
+  const countIn = useProject((s) => s.countIn)
+  const tempo = useProject((s) => s.tempo)
   const annotations = useProject((s) => s.annotations)
   const seek = useProject((s) => s.seek)
   const setPlaying = useProject((s) => s.setPlaying)
+  const setOffset = useProject((s) => s.setOffset)
+
+  const clipDrag = useRef<ClipDrag | null>(null)
+  const scrubbing = useRef(false)
+  const [draggingId, setDraggingId] = useState<ClipId | null>(null)
+  /** 拖曳時凍結顯示長度,否則色條往右移、整條時間軸就跟著縮,看起來像在抗拒 */
+  const [frozenDuration, setFrozenDuration] = useState<number | null>(null)
+
+  const drawDuration = frozenDuration ?? durationMs
+  // memo 起來,不然每次 render 都是新物件,繪製的 effect 會被迫每幀重跑
+  const map = useMemo(
+    () => timelineMap({ countIn, tempo, rangeInMs }),
+    [countIn, tempo, rangeInMs],
+  )
+  const range = playRange({ rangeInMs, rangeOutMs, durationMs, countIn, tempo })
 
   useLayoutEffect(() => {
     const el = wrapRef.current
@@ -63,39 +93,81 @@ export function Timeline() {
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, width, height)
+    if (drawDuration <= 0) return
 
-    if (durationMs <= 0) return
-
-    drawLane(ctx, clips.a, MARKER_H, width, durationMs, laneH)
-    drawLane(ctx, clips.b, MARKER_H + laneH + LANE_GAP, width, durationMs, laneH)
-
-    ctx.strokeStyle = 'rgba(255,255,255,.08)'
+    // 刻度尺:視覺上跟下面的軌道區分開,才看得出來哪裡能拖播放頭
+    ctx.fillStyle = 'rgba(255,255,255,.05)'
+    ctx.fillRect(0, 0, width, RULER_H)
+    ctx.strokeStyle = 'rgba(255,255,255,.12)'
     ctx.lineWidth = 1
-    const stepMs = pickTickStep(durationMs, width)
-    for (let t = 0; t <= durationMs; t += stepMs) {
-      const x = Math.round((t / durationMs) * width) + 0.5
+    const stepMs = pickTickStep(drawDuration, width)
+    ctx.font = '9px system-ui'
+    ctx.fillStyle = 'rgba(255,255,255,.35)'
+    for (let t = 0; t <= drawDuration; t += stepMs) {
+      const x = Math.round((t / drawDuration) * width) + 0.5
       ctx.beginPath()
-      ctx.moveTo(x, MARKER_H)
+      ctx.moveTo(x, RULER_H - 5)
+      ctx.lineTo(x, RULER_H)
+      ctx.stroke()
+      if (x + 26 < width) ctx.fillText(formatTime(t).slice(0, 5), x + 3, 10)
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,.06)'
+    for (let t = 0; t <= drawDuration; t += stepMs) {
+      const x = Math.round((t / drawDuration) * width) + 0.5
+      ctx.beginPath()
+      ctx.moveTo(x, RULER_H)
       ctx.lineTo(x, height)
       ctx.stroke()
     }
 
-    // 刪掉的部分壓暗。時間軸要一眼看出「匯出會拿到哪一段」。
-    const inX = (range.startMs / durationMs) * width
-    const outX = (range.endMs / durationMs) * width
-    ctx.fillStyle = 'rgba(11,13,18,.8)'
-    if (inX > 0) ctx.fillRect(0, MARKER_H, inX, height - MARKER_H)
-    if (outX < width) ctx.fillRect(outX, MARKER_H, width - outX, height - MARKER_H)
+    LANE_ORDER.forEach((id, i) => {
+      drawLane(
+        ctx,
+        clips[id],
+        laneTop(i, laneH),
+        width,
+        drawDuration,
+        laneH,
+        id === draggingId,
+        map,
+      )
+    })
 
+    // 預備拍插在剪輯起點,不是最前面。畫在軌道上面蓋住它們,
+    // 影片的色條就會被切成前後兩段 —— 那正是實際發生的事。
+    if (map.countInMs > 0) {
+      const x0 = (map.countInAtMs / drawDuration) * width
+      const w = (map.countInMs / drawDuration) * width
+      ctx.fillStyle = 'rgba(11,13,18,.9)'
+      ctx.fillRect(x0, RULER_H, w, height - RULER_H)
+      ctx.fillStyle = 'rgba(168,85,247,.25)'
+      ctx.fillRect(x0, RULER_H, w, height - RULER_H)
+      ctx.fillStyle = '#a855f7'
+      ctx.fillRect(x0, RULER_H, 2, height - RULER_H)
+      ctx.fillRect(x0 + w - 2, RULER_H, 2, height - RULER_H)
+      if (w > 46) {
+        ctx.font = '10px system-ui'
+        ctx.fillStyle = 'rgba(216,180,254,.95)'
+        ctx.fillText('預備拍', x0 + 5, RULER_H + 12)
+      }
+    }
+
+    // 刪掉的部分壓暗。時間軸要一眼看出「匯出會拿到哪一段」。
+    const inX = (range.startMs / drawDuration) * width
+    const outX = (range.endMs / drawDuration) * width
+    ctx.fillStyle = 'rgba(11,13,18,.8)'
+    if (inX > 0) ctx.fillRect(0, RULER_H, inX, height - RULER_H)
+    if (outX < width) ctx.fillRect(outX, RULER_H, width - outX, height - RULER_H)
     if (inX > 0 || outX < width) {
       ctx.fillStyle = '#34d399'
-      ctx.fillRect(inX, MARKER_H, 2, height - MARKER_H)
-      ctx.fillRect(outX - 2, MARKER_H, 2, height - MARKER_H)
+      ctx.fillRect(inX, RULER_H, 2, height - RULER_H)
+      ctx.fillRect(outX - 2, RULER_H, 2, height - RULER_H)
     }
 
     // 待處理的切點。畫得比播放頭顯眼,因為下一步就是要靠它決定刪哪邊。
     if (splitAtMs !== null) {
-      const x = (splitAtMs / durationMs) * width
+      // splitAtMs 記的是內容時間,畫出來要換成專案時間
+      const x = (contentToProject(splitAtMs, map) / drawDuration) * width
       ctx.fillStyle = '#f59e0b'
       ctx.fillRect(x - 1, 0, 2, height)
       ctx.beginPath()
@@ -105,62 +177,142 @@ export function Timeline() {
       ctx.closePath()
       ctx.fill()
     }
-  }, [clips, durationMs, width, height, laneH, range.startMs, range.endMs, splitAtMs])
+
+    // 拖曳中直接把偏移量標在色條上,不用切到另一個面板才看得到數字
+    if (draggingId) {
+      const clip = clips[draggingId]
+      if (clip) {
+        const i = LANE_ORDER.indexOf(draggingId)
+        const x = (contentToProject(clip.offsetMs, map) / drawDuration) * width
+        const label = `${clip.offsetMs > 0 ? '+' : ''}${(clip.offsetMs / 1000).toFixed(2)}s`
+        ctx.font = 'bold 11px system-ui'
+        const w = ctx.measureText(label).width + 10
+        const bx = Math.min(Math.max(x + 4, 2), width - w - 2)
+        ctx.fillStyle = CLIP_COLORS[draggingId].edge
+        ctx.fillRect(bx, laneTop(i, laneH) + 3, w, 15)
+        ctx.fillStyle = '#fff'
+        ctx.fillText(label, bx + 5, laneTop(i, laneH) + 14)
+      }
+    }
+  }, [
+    clips,
+    drawDuration,
+    width,
+    height,
+    laneH,
+    range.startMs,
+    range.endMs,
+    splitAtMs,
+    draggingId,
+    map,
+  ])
 
   // 播放頭直接改 DOM,不觸發 React re-render(否則整個時間軸每秒重畫 60 次)。
   // 時間讀 playbackClock 而非 store —— store 是 10Hz 的節流鏡像,拿來畫會一格一格跳。
   useEffect(() => {
     let raf = 0
     const loop = () => {
-      const { durationMs } = useProject.getState()
       const el = playheadRef.current
       if (el) {
-        const pct =
-          durationMs > 0 ? (playbackClock.currentMs / durationMs) * 100 : 0
-        el.style.left = `${pct}%`
+        const total = frozenDuration ?? useProject.getState().durationMs
+        el.style.left = `${total > 0 ? (playbackClock.currentMs / total) * 100 : 0}%`
       }
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [])
+  }, [frozenDuration])
 
-  const scrub = (e: ReactPointerEvent<HTMLDivElement>) => {
+  /** 這個座標落在哪一支影片的色條上?沒有的話回傳 null,代表要移動播放頭。 */
+  const hitClip = (clientX: number, clientY: number): ClipId | null => {
+    const el = wrapRef.current
+    if (!el || drawDuration <= 0) return null
+    const rect = el.getBoundingClientRect()
+    const x = clientX - rect.left
+    const y = clientY - rect.top
+    for (let i = 0; i < LANE_ORDER.length; i++) {
+      const id = LANE_ORDER[i]
+      const clip = clips[id]
+      if (!clip) continue
+      const top = laneTop(i, laneH)
+      if (y < top || y > top + laneH) continue
+      const startMs = contentToProject(clip.offsetMs, map)
+      const endMs = contentToProject(clip.offsetMs + clip.durationMs, map)
+      const x0 = (startMs / drawDuration) * rect.width
+      const x1 = (endMs / drawDuration) * rect.width
+      if (x >= x0 && x <= x1) return id
+    }
+    return null
+  }
+
+  const scrub = (clientX: number) => {
     const el = wrapRef.current
     if (!el || durationMs <= 0) return
     const rect = el.getBoundingClientRect()
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    seek(pct * durationMs)
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    seek(pct * (frozenDuration ?? durationMs))
   }
 
-  const dragging = useRef(false)
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setPlaying(false)
+
+    const id = hitClip(e.clientX, e.clientY)
+    if (id && clips[id]) {
+      clipDrag.current = {
+        id,
+        startClientX: e.clientX,
+        startOffsetMs: clips[id]!.offsetMs,
+        msPerPx: drawDuration / (wrapRef.current?.clientWidth || 1),
+      }
+      setDraggingId(id)
+      setFrozenDuration(durationMs)
+      return
+    }
+    scrubbing.current = true
+    scrub(e.clientX)
+  }
+
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = clipDrag.current
+    if (drag) {
+      const deltaMs = (e.clientX - drag.startClientX) * drag.msPerPx
+      setOffset(drag.id, drag.startOffsetMs + deltaMs)
+      return
+    }
+    if (scrubbing.current) scrub(e.clientX)
+  }
+
+  const endPointer = () => {
+    clipDrag.current = null
+    scrubbing.current = false
+    setDraggingId(null)
+    setFrozenDuration(null)
+  }
 
   return (
     <div className="select-none">
       <div
         ref={wrapRef}
         // touch-none:不吃掉觸控的話,在時間軸上拖曳會變成捲動頁面
-        className="relative w-full cursor-pointer touch-none rounded-md bg-black/40 ring-1 ring-white/10"
+        className={`relative w-full touch-none rounded-md bg-black/40 ring-1 ring-white/10 ${
+          draggingId ? 'cursor-grabbing' : 'cursor-pointer'
+        }`}
         style={{ height }}
-        onPointerDown={(e) => {
-          dragging.current = true
-          setPlaying(false)
-          ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-          scrub(e)
-        }}
-        onPointerMove={(e) => dragging.current && scrub(e)}
-        onPointerUp={() => (dragging.current = false)}
-        onPointerCancel={() => (dragging.current = false)}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endPointer}
+        onPointerCancel={endPointer}
       >
         <canvas ref={canvasRef} className="absolute inset-0" style={{ width, height }} />
 
-        {durationMs > 0 &&
+        {drawDuration > 0 &&
           annotations.map((a) => (
             <div
               key={a.id}
               title={`${formatTime(a.timeMs)} ${a.text}`}
               className="pointer-events-none absolute top-0 w-[2px] bg-amber-400"
-              style={{ left: `${(a.timeMs / durationMs) * 100}%`, height: MARKER_H }}
+              style={{ left: `${(a.timeMs / drawDuration) * 100}%`, height: RULER_H }}
             >
               <div className="absolute -left-[3px] top-0 h-2 w-2 rounded-full bg-amber-400" />
             </div>
@@ -175,13 +327,11 @@ export function Timeline() {
         </div>
       </div>
 
-      {/* 小螢幕上省掉這行,空間留給舞台;波形顏色在「影片」面板裡已經標了 */}
-      {!compact && (
-        <div className="mt-1 flex justify-between text-[11px] text-white/40">
-          <span>A(藍)· {clips.a?.name ?? '未載入'}</span>
-          <span>B(粉)· {clips.b?.name ?? '未載入'}</span>
-        </div>
-      )}
+      <p className="mt-1 text-[11px] text-white/30">
+        {draggingId
+          ? `拖曳影片 ${draggingId.toUpperCase()} 調整時間偏移`
+          : '拖上方刻度移動播放頭 · 拖色條移動該支影片'}
+      </p>
     </div>
   )
 }
@@ -193,15 +343,33 @@ function drawLane(
   width: number,
   durationMs: number,
   laneH: number,
+  active: boolean,
+  map: TimelineMap,
 ) {
   if (!clip) return
-  const color = LANE_COLORS[clip.id]
+  const color = CLIP_COLORS[clip.id]
 
-  // 影片佔用的時間範圍
-  const x0 = (clip.offsetMs / durationMs) * width
-  const x1 = ((clip.offsetMs + clip.durationMs) / durationMs) * width
+  // 影片在專案時間軸上的位置。橫跨預備拍插入點的話,色條會被切成兩段 ——
+  // 上面那層預備拍的方塊會蓋掉中間,所以這裡直接畫整條就好。
+  const startMs = contentToProject(clip.offsetMs, map)
+  const endMs = contentToProject(clip.offsetMs + clip.durationMs, map)
+  const x0 = (startMs / durationMs) * width
+  const x1 = (endMs / durationMs) * width
+  const w = Math.max(2, x1 - x0)
+
   ctx.fillStyle = color.bg
-  ctx.fillRect(x0, top, Math.max(1, x1 - x0), laneH)
+  ctx.fillRect(x0, top, w, laneH)
+  // 兩側加邊,色條才讀得出來是「一塊可以抓的東西」
+  ctx.fillStyle = color.edge
+  ctx.globalAlpha = active ? 1 : 0.5
+  ctx.fillRect(x0, top, 2, laneH)
+  ctx.fillRect(x1 - 2, top, 2, laneH)
+  ctx.globalAlpha = 1
+  if (active) {
+    ctx.strokeStyle = color.edge
+    ctx.lineWidth = 1
+    ctx.strokeRect(x0 + 0.5, top + 0.5, w - 1, laneH - 1)
+  }
 
   const env = clip.envelope
   if (!env || env.length === 0) {
@@ -220,9 +388,9 @@ function drawLane(
   ctx.fillStyle = color.wave
 
   for (let x = Math.max(0, Math.floor(x0)); x < Math.min(width, Math.ceil(x1)); x++) {
-    // 一個像素可能橫跨多個取樣點,取這段裡的峰值才不會漏掉重拍
-    const t0 = (x / width) * durationMs - clip.offsetMs
-    const t1 = ((x + 1) / width) * durationMs - clip.offsetMs
+    // 專案時間 → 內容時間 → 影片自己的時間,一層都不能少
+    const t0 = projectToContent((x / width) * durationMs, map) - clip.offsetMs
+    const t1 = projectToContent(((x + 1) / width) * durationMs, map) - clip.offsetMs
     const i0 = Math.max(0, Math.floor(t0 / msPerSample))
     const i1 = Math.min(env.length, Math.max(i0 + 1, Math.ceil(t1 / msPerSample)))
     let peak = 0

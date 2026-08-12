@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import type { RefObject } from 'react'
-import { playRange, useProject } from '../store/useProject'
+import { playRange, timelineMap, useProject } from '../store/useProject'
+import { contentToProject, isInCountIn, projectToContent } from '../lib/timeline'
 import { resolveClipTime } from '../lib/layout'
 import { playbackClock } from '../lib/playbackClock'
 import { AUDIBLE_MAX_TRIM, MUTED_MAX_TRIM, correctDrift } from '../lib/sync'
@@ -41,13 +42,21 @@ export function usePlaybackEngine(refs: VideoRefs) {
 
       const state = useProject.getState()
       const { playing, durationMs, rate, clips } = state
-      const master = playing ? pickMaster(refs, clips, playbackClock.currentMs) : null
+      const map = timelineMap(state)
+      // 預備拍那段沒有影片內容,不能拿影片當時鐘主控 —— 它會把播放頭
+      // 直接拉出預備拍區間,節拍器等於沒響
+      const inCountIn = isInCountIn(playbackClock.currentMs, map)
+      const contentMs = projectToContent(playbackClock.currentMs, map)
+      const master = playing && !inCountIn ? pickMaster(refs, clips, contentMs) : null
 
       if (playing && durationMs > 0) {
         if (master) {
           // 跟著主控影片自己的解碼時鐘走,它想播多快就多快
           const el = refs[master].current!
-          playbackClock.currentMs = el.currentTime * 1000 + clips[master]!.offsetMs
+          playbackClock.currentMs = contentToProject(
+            el.currentTime * 1000 + clips[master]!.offsetMs,
+            map,
+          )
         } else {
           playbackClock.currentMs += delta * rate
         }
@@ -62,17 +71,19 @@ export function usePlaybackEngine(refs: VideoRefs) {
         }
       }
 
-      const projectMs = playbackClock.currentMs
+      const contentNow = projectToContent(playbackClock.currentMs, map)
+      // 預備拍期間影片要停住,只有節拍器在響
+      const clipsRunning = playing && !isInCountIn(playbackClock.currentMs, map)
 
       for (const id of ['a', 'b'] as ClipId[]) {
         const el = refs[id].current
         const clip = clips[id]
         if (!el || !clip) continue
 
-        const { targetSec, inRange } = resolveClipTime(clip, projectMs)
+        const { targetSec, inRange } = resolveClipTime(clip, contentNow)
         setVolume(el, clip.volume)
 
-        if (!playing || !inRange) {
+        if (!clipsRunning || !inRange) {
           if (!el.paused) el.pause()
           setRate(el, rate)
           // 暫停時要跟上播放頭,否則拖時間軸畫面不會動
@@ -97,10 +108,10 @@ export function usePlaybackEngine(refs: VideoRefs) {
       // React 端節流。標註的出現/消失差 100ms 看不出來,
       // 但每幀 set 一次 store 會讓整棵樹一秒重繪 60 次。
       const store = useProject.getState()
-      const drifted = Math.abs(store.currentMs - projectMs) > 1
+      const drifted = Math.abs(store.currentMs - playbackClock.currentMs) > 1
       if (drifted && (!playing || now - lastStoreSync >= STORE_SYNC_INTERVAL_MS)) {
         lastStoreSync = now
-        store.seek(projectMs)
+        store.seek(playbackClock.currentMs)
       }
 
       raf = requestAnimationFrame(tick)

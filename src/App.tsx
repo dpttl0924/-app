@@ -7,9 +7,11 @@ import { ClipPanel } from './components/ClipPanel'
 import { ModePanel } from './components/ModePanel'
 import { AlignPanel } from './components/AlignPanel'
 import { AnnotationPanel } from './components/AnnotationPanel'
+import { CountInPanel } from './components/CountInPanel'
 import { TrimPanel } from './components/TrimPanel'
 import { ExportPanel } from './components/ExportPanel'
 import { usePlaybackEngine } from './hooks/usePlaybackEngine'
+import { useMetronome } from './hooks/useMetronome'
 import { DESKTOP_QUERY, useMediaQuery } from './hooks/useMediaQuery'
 import { useProject } from './store/useProject'
 
@@ -31,6 +33,7 @@ export default function App() {
   }).current
 
   usePlaybackEngine(refs)
+  useMetronome()
 
   const isDesktop = useMediaQuery(DESKTOP_QUERY)
   const [tab, setTab] = useState<TabId>('clips')
@@ -64,7 +67,12 @@ export default function App() {
     ),
     mode: <ModePanel />,
     align: <AlignPanel />,
-    trim: <TrimPanel />,
+    trim: (
+      <>
+        <CountInPanel />
+        <TrimPanel />
+      </>
+    ),
     text: <AnnotationPanel />,
     export: <ExportPanel refs={refs} />,
   }
@@ -84,6 +92,7 @@ export default function App() {
             <ClipPanel id="a" />
             <ClipPanel id="b" />
             <AlignPanel />
+            <CountInPanel />
             <TrimPanel />
             <AnnotationPanel />
             <ExportPanel refs={refs} />

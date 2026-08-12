@@ -1,6 +1,10 @@
-import { drawClip } from './layout'
+import { drawClip, slotRect } from './layout'
+import { drawAudioPlaceholder } from './audioPreview'
+import { CLIP_COLORS } from './clipColors'
+import { projectToContent, type TimelineMap } from './timeline'
 import {
   ASPECT_SIZES,
+  isAudioOnly,
   type Annotation,
   type AspectRatio,
   type BlendMode,
@@ -19,6 +23,8 @@ export interface FrameState {
   wipe: number
   annotations: Annotation[]
   currentMs: number
+  /** 內容時間與專案時間的換算(預備拍插在剪輯起點,不是最前面) */
+  map: TimelineMap
 }
 
 /**
@@ -38,6 +44,8 @@ export function renderFrame(
 ) {
   const { clips, mode, opacity, blend, wipe, annotations, currentMs } = state
   const size = ASPECT_SIZES[state.aspect]
+  // 影片吃內容時間,標註與分割線用專案時間 —— 標註是使用者在時間軸上放的
+  const contentMs = projectToContent(currentMs, state.map)
 
   ctx.save()
   ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -45,7 +53,7 @@ export function renderFrame(
   ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height)
   ctx.restore()
 
-  drawIfVisible(ctx, clips.a, videos.a, mode, currentMs, size)
+  drawIfVisible(ctx, clips.a, videos.a, mode, contentMs, size)
 
   if (clips.b && videos.b) {
     ctx.save()
@@ -58,7 +66,7 @@ export function renderFrame(
       ctx.rect(wipe * size.w, 0, size.w - wipe * size.w, size.h)
       ctx.clip()
     }
-    drawIfVisible(ctx, clips.b, videos.b, mode, currentMs, size)
+    drawIfVisible(ctx, clips.b, videos.b, mode, contentMs, size)
     ctx.restore()
   }
 
@@ -87,6 +95,13 @@ function drawIfVisible(
   if (!clip || !video || video.readyState < 2) return
   // 還沒輪到這段影片時不畫,與預覽的行為一致
   if (currentMs - clip.offsetMs < 0) return
+
+  // 純音檔的 videoWidth/videoHeight 是 0,drawImage 對著它畫不會報錯但也畫不出東西 ——
+  // 沒有任何提示的話使用者會以為壞掉了,所以換成波形佔位畫面。
+  if (isAudioOnly(clip)) {
+    drawAudioPlaceholder(ctx, clip, slotRect(mode, clip.id, size), CLIP_COLORS[clip.id].wave)
+    return
+  }
   drawClip(ctx, clip, video, mode, size)
 }
 

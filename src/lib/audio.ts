@@ -59,9 +59,24 @@ export interface AlignResult {
 /** 次高峰分數在主峰的這個比例之內,就當成值得一提的另一個候選 */
 const ALTERNATIVE_THRESHOLD = 0.05
 
+/**
+ * 分析用的解碼取樣率。
+ *
+ * decodeAudioData 會把音訊重新取樣到 context 的取樣率,所以這個值直接決定
+ * 解碼後佔多少記憶體 —— 3 分鐘的影片在 48kHz 立體聲是約 69MB,兩支就 138MB,
+ * 在 iPhone 上很容易讓 Safari 直接把分頁回收掉(選完影片回不了網頁就是這個症狀)。
+ *
+ * 16kHz 單聲道是 6 分之一(約 11.5MB)。選 16k 而不是更低,是因為包絡是靠
+ * 每 10ms 的 RMS 能量算的,取樣率太低會把小鼓與 hi-hat 的高頻瞬態濾掉,
+ * 起音會變鈍。16kHz 保留到 8kHz,鼓組的資訊幾乎都還在。
+ *
+ * 包絡本身只有 100Hz,所以這個取樣率遠遠夠用。
+ */
+const ANALYSIS_SAMPLE_RATE = 16000
+
 let sharedCtx: OfflineAudioContext | null = null
 function getDecodeContext(): OfflineAudioContext {
-  if (!sharedCtx) sharedCtx = new OfflineAudioContext(1, 1, 48000)
+  if (!sharedCtx) sharedCtx = new OfflineAudioContext(1, 1, ANALYSIS_SAMPLE_RATE)
   return sharedCtx
 }
 
@@ -107,7 +122,7 @@ export async function analyzeAudio(file: Blob): Promise<AudioAnalysis> {
 }
 
 /** 減平均、除標準差。互相關前一定要做,否則直流成分會蓋掉真正的峰值。 */
-function standardize(src: Float32Array): Float32Array {
+export function standardize(src: Float32Array): Float32Array {
   const n = src.length
   let mean = 0
   for (let i = 0; i < n; i++) mean += src[i]

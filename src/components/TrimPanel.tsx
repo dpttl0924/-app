@@ -1,4 +1,4 @@
-import { playRange, useProject } from '../store/useProject'
+import { contentDurationMs, useProject } from '../store/useProject'
 import { formatSeconds, formatTime } from '../lib/format'
 import { Button, Panel } from './ui'
 
@@ -19,6 +19,8 @@ export function TrimPanel() {
   const rangeInMs = useProject((s) => s.rangeInMs)
   const rangeOutMs = useProject((s) => s.rangeOutMs)
   const splitAtMs = useProject((s) => s.splitAtMs)
+  const countIn = useProject((s) => s.countIn)
+  const tempo = useProject((s) => s.tempo)
   const previousRange = useProject((s) => s.previousRange)
   const splitAtPlayhead = useProject((s) => s.splitAtPlayhead)
   const cancelSplit = useProject((s) => s.cancelSplit)
@@ -27,8 +29,15 @@ export function TrimPanel() {
   const clearRange = useProject((s) => s.clearRange)
   const setPlaying = useProject((s) => s.setPlaying)
 
-  const range = playRange({ rangeInMs, rangeOutMs, durationMs })
-  const trimmed = range.startMs > 0 || range.endMs < durationMs
+  // 全部用內容時間顯示。剪輯談的是「留下哪一段素材」,
+  // 預備拍佔多長是另一件事,歸預備拍面板管。
+  const contentMs = contentDurationMs({ durationMs, countIn, tempo })
+  const range = {
+    startMs: rangeInMs,
+    endMs: rangeOutMs ?? contentMs,
+    durationMs: (rangeOutMs ?? contentMs) - rangeInMs,
+  }
+  const trimmed = range.startMs > 0 || range.endMs < contentMs
   const empty = durationMs <= 0
 
   const onSplit = () => {
@@ -55,7 +64,7 @@ export function TrimPanel() {
         <span className="text-white/40">
           共 {formatSeconds(range.durationMs)}
           {trimmed && (
-            <span className="text-white/25"> / {formatSeconds(durationMs)}</span>
+            <span className="text-white/25"> / {formatSeconds(contentMs)}</span>
           )}
         </span>
       </div>

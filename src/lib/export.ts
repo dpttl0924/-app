@@ -1,5 +1,7 @@
 import { renderFrame } from './renderer'
-import { playRange, useProject } from '../store/useProject'
+import { countInPlan, playRange, timelineMap, useProject } from '../store/useProject'
+import { audioContext, resumeAudio, sourceFor } from './audioBus'
+import { scheduleClicks } from './metronome'
 import { playbackClock } from './playbackClock'
 import { ASPECT_SIZES, type ClipId } from './types'
 
@@ -43,64 +45,63 @@ function pickMime() {
   throw new Error('這個瀏覽器不支援 MediaRecorder 錄影')
 }
 
-type CapturableVideo = HTMLVideoElement & {
-  captureStream?: () => MediaStream
-  mozCaptureStream?: () => MediaStream
+interface ExportAudio {
+  track: MediaStreamTrack | null
+  /** 匯出結束時要斷開的連線與排程 */
+  dispose: () => void
 }
 
 /**
- * createMediaElementSource 對同一個 element 只能呼叫一次,再呼叫會 throw。
- * 而且一旦建立,該 element 的聲音就改走 Web Audio,必須自己接回喇叭。
- * 所以這裡快取住,整個 session 共用。
+ * 準備匯出用的音軌:影片的聲音 + 預備拍的節拍器,混進同一條。
+ *
+ * 全部走 Web Audio 而不是 `video.captureStream()`,有兩個理由:
+ *   1. Safari 根本沒實作 HTMLMediaElement.captureStream(),iPhone 上會靜音
+ *   2. 要跟節拍器混音,本來就得進 Web Audio 圖
+ *
+ * 抓不到聲音時輸出無聲,不讓整個匯出失敗 —— 畫面通常才是重點。
  */
-const webAudioTaps = new WeakMap<HTMLMediaElement, MediaStreamAudioDestinationNode>()
+function prepareAudio(videos: Record<ClipId, HTMLVideoElement | null>): ExportAudio {
+  const state = useProject.getState()
+  const ac = audioContext()
+  const dest = ac.createMediaStreamDestination()
+  const connected: AudioNode[] = []
 
-/**
- * Safari 沒有實作 HTMLMediaElement.captureStream(),只有 canvas 版本。
- * 不處理的話 iPhone 匯出會靜音 —— 而手機正是主要使用場景。
- * 這裡退回 Web Audio:MediaElementSource → MediaStreamDestination 一樣拿得到音軌。
- */
-function tapAudioViaWebAudio(el: HTMLMediaElement): MediaStreamTrack | null {
-  try {
-    let dest = webAudioTaps.get(el)
-    if (!dest) {
-      const ac = new AudioContext()
-      const source = ac.createMediaElementSource(el)
-      dest = ac.createMediaStreamDestination()
-      source.connect(dest)
-      source.connect(ac.destination) // 接回喇叭,否則錄製時聽不到聲音
-      webAudioTaps.set(el, dest)
-    }
-    return dest.stream.getAudioTracks()[0] ?? null
-  } catch {
-    return null
+  // 影片的聲音:音量大於零的都接進來
+  for (const id of ['a', 'b'] as ClipId[]) {
+    const el = videos[id]
+    const clip = state.clips[id]
+    if (!el || !clip || clip.volume <= 0) continue
+    const source = sourceFor(el)
+    if (!source) continue
+    source.connect(dest)
+    connected.push(source)
   }
-}
 
-/** 從主音源那段影片抓音軌。抓不到就輸出無聲,不讓整個匯出失敗。 */
-function grabAudioTrack(videos: Record<ClipId, HTMLVideoElement | null>) {
-  const { clips } = useProject.getState()
-  const order: ClipId[] = ['a', 'b']
-  const loudest = order
-    .filter((id) => clips[id] && videos[id])
-    .sort((x, y) => (clips[y]!.volume ?? 0) - (clips[x]!.volume ?? 0))[0]
-  if (!loudest || (clips[loudest]?.volume ?? 0) <= 0) return null
+  // 節拍器:錄製起點就是剪輯起點,也正是預備拍的開頭,所以 click 的時間可以直接用
+  const plan = countInPlan(state.countIn, state.tempo?.phaseMs ?? 0)
+  const metronome =
+    plan.clickTimesMs.length > 0
+      ? scheduleClicks(ac, plan.clickTimesMs, {
+          volume: state.countIn.volume,
+          destinations: [dest, ac.destination],
+        })
+      : null
 
-  const el = videos[loudest] as CapturableVideo | null
-  if (!el) return null
-
-  const capture = el.captureStream ?? el.mozCaptureStream
-  if (capture) {
-    try {
-      const track = capture.call(el).getAudioTracks()[0]
-      if (track) return { track, stopWithTrack: true }
-    } catch {
-      // 落到 Web Audio
-    }
+  return {
+    track: dest.stream.getAudioTracks()[0] ?? null,
+    dispose: () => {
+      metronome?.cancel()
+      // 只斷開這次接上的線。source 節點本身要留著 —— 同一個 element
+      // 不能再 createMediaElementSource 第二次。
+      for (const node of connected) {
+        try {
+          node.disconnect(dest)
+        } catch {
+          // 已經斷開就算了
+        }
+      }
+    },
   }
-  const track = tapAudioViaWebAudio(el)
-  // Web Audio 的音軌是快取共用的,停掉之後就再也拿不到聲音了,所以不能 stop
-  return track ? { track, stopWithTrack: false } : null
 }
 
 export async function exportComposite(opts: ExportOptions): Promise<ExportResult> {
@@ -119,8 +120,10 @@ export async function exportComposite(opts: ExportOptions): Promise<ExportResult
   if (!ctx) throw new Error('無法建立 canvas context')
 
   const stream = canvas.captureStream(fps)
-  const audio = grabAudioTrack(videos)
-  if (audio) stream.addTrack(audio.track)
+  // 節拍器要相對於錄製起點排程,所以先喚醒 AudioContext 再開始
+  await resumeAudio()
+  const audio = prepareAudio(videos)
+  if (audio.track) stream.addTrack(audio.track)
 
   const mime = pickMime()
   const recorder = new MediaRecorder(stream, {
@@ -156,7 +159,7 @@ export async function exportComposite(opts: ExportOptions): Promise<ExportResult
       ctx.save()
       // 換算比例,讓 renderFrame 永遠在專案座標系裡工作
       ctx.scale(canvas.width / size.w, canvas.height / size.h)
-      renderFrame(ctx, { ...s, currentMs }, videos)
+      renderFrame(ctx, { ...s, currentMs, map: timelineMap(s) }, videos)
       ctx.restore()
 
       onProgress?.(
@@ -179,7 +182,7 @@ export async function exportComposite(opts: ExportOptions): Promise<ExportResult
   store.setPlaying(false)
   store.setRate(restore.rate)
   store.seek(restore.currentMs)
-  if (audio?.stopWithTrack) audio.track.stop()
+  audio.dispose()
 
   return { blob, extension: mime.ext }
 }

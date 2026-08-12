@@ -115,18 +115,16 @@ describe('cssTransform', () => {
     // CSS 的 translate(x%) 是相對元素自身寬度,而元素就是一整格,
     // 所以 offsetX/slot.w × slot.w 會等於 canvas 用的 offsetX
     const clip = makeClip({
-      transform: { scale: 1.5, offsetX: 270, offsetY: -192, rotation: 15, mirrored: false },
+      transform: { scale: 1.5, offsetX: 270, offsetY: -192, mirrored: false },
     })
     const slot = slotRect('sideBySide', 'a', ASPECT_SIZES['9:16']) // 540 x 1920
-    expect(cssTransform(clip, slot)).toBe(
-      'translate(50%, -10%) rotate(15deg) scale(1.5, 1.5)',
-    )
+    expect(cssTransform(clip, slot)).toBe('translate(50%, -10%) scale(1.5, 1.5)')
   })
 
   it('沒有位移時輸出 0%,不會變成 NaN', () => {
     const clip = makeClip()
     const slot = slotRect('overlay', 'a', ASPECT_SIZES['16:9'])
-    expect(cssTransform(clip, slot)).toBe('translate(0%, 0%) rotate(0deg) scale(1, 1)')
+    expect(cssTransform(clip, slot)).toBe('translate(0%, 0%) scale(1, 1)')
   })
 
   it('鏡像是把 x 軸縮放取負號', () => {
@@ -150,14 +148,6 @@ describe('cssTransform', () => {
     expect(translateOf(mirrored)).toBe(translateOf(normal))
   })
 
-  it('鏡像不會反轉旋轉角度', () => {
-    // 用來校正手機拿歪的那 2 度,翻轉後仍然要是同一個方向
-    const clip = makeClip({
-      transform: { ...DEFAULT_TRANSFORM, rotation: 2, mirrored: true },
-    })
-    const slot = slotRect('overlay', 'a', ASPECT_SIZES['9:16'])
-    expect(cssTransform(clip, slot)).toContain('rotate(2deg)')
-  })
 })
 
 /** 錄下 canvas 呼叫,用來比對兩條渲染路徑 */
@@ -184,12 +174,10 @@ const opArgs = (ops: { op: string; args: number[] }[], name: string) =>
 /** 從 CSS transform 字串裡把數字抓出來 */
 function parseCss(css: string) {
   const t = css.match(/translate\(([-\d.]+)%, ([-\d.]+)%\)/)!
-  const r = css.match(/rotate\(([-\d.]+)deg\)/)!
   const s = css.match(/scale\(([-\d.]+), ([-\d.]+)\)/)!
   return {
     txPercent: +t[1],
     tyPercent: +t[2],
-    rotationDeg: +r[1],
     scaleX: +s[1],
     scaleY: +s[2],
   }
@@ -203,8 +191,8 @@ describe('預覽(CSS)與匯出(canvas)必須畫出同一件事', () => {
     ['縮放加位移', { ...DEFAULT_TRANSFORM, scale: 1.8, offsetX: 120, offsetY: -80 }],
     ['鏡像', { ...DEFAULT_TRANSFORM, mirrored: true }],
     [
-      '鏡像加旋轉加位移',
-      { ...DEFAULT_TRANSFORM, mirrored: true, rotation: 12, offsetX: -60, scale: 0.75 },
+      '鏡像加縮放加位移',
+      { ...DEFAULT_TRANSFORM, mirrored: true, offsetX: -60, offsetY: 40, scale: 0.75 },
     ],
   ] as const
 
@@ -223,18 +211,15 @@ describe('預覽(CSS)與匯出(canvas)必須畫出同一件事', () => {
       expect((css.txPercent / 100) * slot.w + slot.x + slot.w / 2).toBeCloseTo(canvasTx)
       expect((css.tyPercent / 100) * slot.h + slot.y + slot.h / 2).toBeCloseTo(canvasTy)
 
-      // 旋轉:CSS 用度,canvas 用弧度
-      expect((css.rotationDeg * Math.PI) / 180).toBeCloseTo(opArgs(ops, 'rotate')[0])
-
       // 縮放:兩邊必須完全一樣,鏡像的負號也要一致
       const [canvasSx, canvasSy] = opArgs(ops, 'scale')
       expect(css.scaleX).toBeCloseTo(canvasSx)
       expect(css.scaleY).toBeCloseTo(canvasSy)
 
-      // 操作順序必須是 translate → rotate → scale → 畫圖
+      // 操作順序必須是 translate → scale → 畫圖
       expect(ops.map((o) => o.op).filter((o) =>
-        ['translate', 'rotate', 'scale', 'drawImage'].includes(o),
-      )).toEqual(['translate', 'rotate', 'scale', 'drawImage'])
+        ['translate', 'scale', 'drawImage'].includes(o),
+      )).toEqual(['translate', 'scale', 'drawImage'])
     })
   }
 

@@ -40,8 +40,6 @@ export interface ClipTransform {
   /** 專案座標系的位移(px) */
   offsetX: number
   offsetY: number
-  /** 角度 */
-  rotation: number
   /**
    * 左右翻轉。
    *
@@ -83,11 +81,14 @@ export interface Annotation {
   fontSize: number
 }
 
+/** 單支影片的縮放範圍。縮太小沒意義,放太大會糊掉。 */
+export const MIN_CLIP_SCALE = 0.2
+export const MAX_CLIP_SCALE = 4
+
 export const DEFAULT_TRANSFORM: ClipTransform = {
   scale: 1,
   offsetX: 0,
   offsetY: 0,
-  rotation: 0,
   mirrored: false,
 }
 
@@ -96,4 +97,15 @@ export interface Rect {
   y: number
   w: number
   h: number
+}
+
+/**
+ * 這支素材有沒有畫面。
+ *
+ * A/B 兩槽除了影片也接受純音檔(例如只有參考音樂、沒有舞蹈影片的情況)。
+ * `<video>` 讀純音檔完全沒問題,只是 videoWidth/videoHeight 會是 0 ——
+ * 用這兩個既有欄位判斷,不需要額外的旗標欄位或機率性的檔名/MIME 猜測。
+ */
+export function isAudioOnly(clip: Clip): boolean {
+  return clip.width <= 0 || clip.height <= 0
 }

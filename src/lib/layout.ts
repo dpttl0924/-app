@@ -51,9 +51,8 @@ export function containSize(clip: Clip, slot: Rect): { w: number; h: number } {
 /**
  * 水平縮放係數。鏡像就是把 x 軸的縮放取負號。
  *
- * 它排在 rotate 之後(也就是最先作用在影像上),所以翻的是「影片內容」而不是整個版面:
- *   - 位移不會跟著左右顛倒,翻轉前擺好的位置不會跑掉
- *   - 旋轉角度也不會被反轉,用來校正手機拿歪的那 2 度仍然是對的方向
+ * 排在 translate 之後(也就是先作用在影像上),所以翻的是「影片內容」而不是整個版面:
+ * 位移不會跟著左右顛倒,翻轉前擺好的位置不會跑掉。
  */
 function scaleX(t: ClipTransform): number {
   return t.mirrored ? -t.scale : t.scale
@@ -61,7 +60,7 @@ function scaleX(t: ClipTransform): number {
 
 /**
  * 給 CSS 用的 transform 字串。
- * 順序必須與 drawClip() 的 canvas 操作順序一致:translate → rotate → scale。
+ * 順序必須與 drawClip() 的 canvas 操作順序一致:translate → scale。
  *
  * 位移刻意輸出成百分比而非 px:影片元素本身就是一整格大小,
  * 所以「格子寬的 x%」不管畫面被縮到多小都成立,不需要 JS 量任何東西。
@@ -71,7 +70,7 @@ export function cssTransform(clip: Clip, slot: Rect): string {
   const t = clip.transform
   const tx = (t.offsetX / slot.w) * 100
   const ty = (t.offsetY / slot.h) * 100
-  return `translate(${tx}%, ${ty}%) rotate(${t.rotation}deg) scale(${scaleX(t)}, ${t.scale})`
+  return `translate(${tx}%, ${ty}%) scale(${scaleX(t)}, ${t.scale})`
 }
 
 /**
@@ -164,7 +163,6 @@ export function drawClip(
   ctx.clip()
 
   ctx.translate(slot.x + slot.w / 2 + t.offsetX, slot.y + slot.h / 2 + t.offsetY)
-  ctx.rotate((t.rotation * Math.PI) / 180)
   // x 軸為負時,drawImage 就會以中心為軸左右翻轉 —— 與 CSS 的 scale(-s, s) 等價
   ctx.scale(scaleX(t), t.scale)
   ctx.drawImage(source, -fit.w / 2, -fit.h / 2, fit.w, fit.h)

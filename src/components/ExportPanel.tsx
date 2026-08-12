@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { downloadBlob, exportComposite } from '../lib/export'
+import { exportAudio } from '../lib/audioExport'
 import { playRange, useProject } from '../store/useProject'
-import { formatTime } from '../lib/format'
+import { formatSeconds, formatTime } from '../lib/format'
 import { ASPECT_SIZES } from '../lib/types'
 import type { VideoRefs } from '../hooks/usePlaybackEngine'
 import { Button, Field, Panel, inputClass } from './ui'
@@ -15,13 +16,32 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
   const durationMs = useProject((s) => s.durationMs)
   const rangeInMs = useProject((s) => s.rangeInMs)
   const rangeOutMs = useProject((s) => s.rangeOutMs)
-  const range = playRange({ rangeInMs, rangeOutMs, durationMs })
+  const countIn = useProject((s) => s.countIn)
+  const tempo = useProject((s) => s.tempo)
+  const range = playRange({ rangeInMs, rangeOutMs, durationMs, countIn, tempo })
   const aspect = useProject((s) => s.aspect)
   const size = ASPECT_SIZES[aspect]
   const [scale, setScale] = useState(2 / 3)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(0)
+  const [audioBusy, setAudioBusy] = useState(false)
+  const [audioProgress, setAudioProgress] = useState(0)
   const [error, setError] = useState('')
+
+  const runAudio = async () => {
+    setAudioBusy(true)
+    setError('')
+    setAudioProgress(0)
+    try {
+      const { blob } = await exportAudio(setAudioProgress)
+      downloadBlob(blob, `dance-compare-${Date.now()}.wav`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '音訊匯出失敗')
+    } finally {
+      setAudioBusy(false)
+      setAudioProgress(0)
+    }
+  }
 
   const run = async () => {
     setBusy(true)
@@ -79,6 +99,21 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
       )}
 
       {error && <p className="text-[11px] text-red-400">{error}</p>}
+
+      <div className="border-t border-white/10 pt-2">
+        <Button
+          className="w-full"
+          disabled={durationMs <= 0 || busy || audioBusy}
+          onClick={() => void runAudio()}
+        >
+          {audioBusy ? `混音中 ${(audioProgress * 100).toFixed(0)}%` : '只匯出音訊(WAV)'}
+        </Button>
+        <p className="mt-1.5 text-[11px] leading-relaxed text-white/35">
+          預備拍 + 歌曲,不含畫面。走離線混音,幾秒就好,
+          而且不需要一直開著畫面。未壓縮,{formatSeconds(range.durationMs)} 約{' '}
+          {Math.round((range.durationMs / 1000) * 44100 * 2 * 2 / 1048576)} MB。
+        </p>
+      </div>
 
       <p className="text-[11px] leading-relaxed text-white/35">
         目前走 MediaRecorder 即時錄製,匯出時間約等於輸出範圍的長度(

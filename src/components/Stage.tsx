@@ -1,8 +1,14 @@
-import { useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
 import { cssTransform, slotRect } from '../lib/layout'
+import { zoomAround } from '../lib/zoom'
+import { drawAudioPlaceholder } from '../lib/audioPreview'
+import { CLIP_COLORS } from '../lib/clipColors'
 import {
   ASPECT_SIZES,
+  MAX_CLIP_SCALE,
+  MIN_CLIP_SCALE,
+  isAudioOnly,
   type Clip,
   type ClipId,
   type CompareMode,
@@ -58,6 +64,49 @@ export function Stage({ refs }: StageProps) {
 
   const annotationDrag = useRef<string | null>(null)
   const gesture = useRef<GestureState | null>(null)
+
+  /**
+   * 滾輪縮放。
+   *
+   * 手勢只在兩根手指以上才改 scale,而滑鼠只有一個指標 ——
+   * 桌機因此完全沒辦法縮放,這是把 slider 換成手勢時漏掉的。
+   *
+   * 以游標為錨點而不是格子中心:放大時你盯著的那個點會留在原地,
+   * 不然每放大一次都要重新拖回來找目標。
+   * 用原生監聽器是為了 passive: false —— 不 preventDefault 的話整頁會跟著捲。
+   */
+  useLayoutEffect(() => {
+    const box = boxRef.current
+    if (!box || !adjustTarget) return
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const store = useProject.getState()
+      const clip = store.clips[adjustTarget]
+      if (!clip) return
+
+      const from = clip.transform.scale
+      const to = clamp(
+        from * Math.exp(-e.deltaY * 0.0015),
+        MIN_CLIP_SCALE,
+        MAX_CLIP_SCALE,
+      )
+      if (to === from) return
+
+      // 游標位置換算到專案座標系,再取相對於這一格中心的位移
+      const rect = box.getBoundingClientRect()
+      const toProjectPx = size.w / rect.width
+      const slot = slotRect(store.mode, adjustTarget, size)
+      const anchor = {
+        x: (e.clientX - rect.left) * toProjectPx - (slot.x + slot.w / 2),
+        y: (e.clientY - rect.top) * toProjectPx - (slot.y + slot.h / 2),
+      }
+      store.setTransform(adjustTarget, zoomAround(clip.transform, to, anchor))
+    }
+
+    box.addEventListener('wheel', onWheel, { passive: false })
+    return () => box.removeEventListener('wheel', onWheel)
+  }, [adjustTarget, size])
 
   /** 螢幕像素 → 專案座標系像素。每次都現算,不會有過期的縮放倍率。 */
   const toProject = (px: number) => {
@@ -129,7 +178,11 @@ export function Stage({ refs }: StageProps) {
       offsetY: g.startOffsetY + toProject(center.y - g.startCenter.y),
     }
     if (pts.length >= 2 && g.startDistance > 0) {
-      patch.scale = clamp(g.startScale * (distance(pts[0], pts[1]) / g.startDistance), 0.2, 4)
+      patch.scale = clamp(
+        g.startScale * (distance(pts[0], pts[1]) / g.startDistance),
+        MIN_CLIP_SCALE,
+        MAX_CLIP_SCALE,
+      )
     }
     setTransform(clip.id, patch)
   }
@@ -147,6 +200,7 @@ export function Stage({ refs }: StageProps) {
     if (clip) rebase(g, clip)
   }
 
+  // 標註用專案時間(使用者是在時間軸上放的),不扣預備拍
   const visible = annotations.filter(
     (a) => currentMs >= a.timeMs && currentMs <= a.timeMs + a.durationMs,
   )
@@ -283,6 +337,7 @@ interface ClipLayerProps {
 function ClipLayer({ clip, videoRef, mode, size, style }: ClipLayerProps) {
   if (!clip) return null
   const slot = slotRect(mode, clip.id, size)
+  const audioOnly = isAudioOnly(clip)
 
   return (
     <div
@@ -295,15 +350,51 @@ function ClipLayer({ clip, videoRef, mode, size, style }: ClipLayerProps) {
         ...style,
       }}
     >
+      {/*
+        video 元素一定要留著,播放引擎靠它控制音訊播放 —— 純音檔也是靠這個元素播的,
+        只是畫面沒有東西可以顯示,所以視覺上隱藏,改疊一層佔位畫面上去。
+      */}
       <video
         ref={videoRef}
         src={clip.url}
         playsInline
         preload="auto"
-        className="pointer-events-none h-full w-full"
+        className={`pointer-events-none h-full w-full ${audioOnly ? 'invisible' : ''}`}
         style={{ objectFit: 'contain', transform: cssTransform(clip, slot) }}
       />
+      {audioOnly && <AudioPlaceholder clip={clip} slot={slot} />}
     </div>
+  )
+}
+
+/**
+ * 純音檔的佔位畫面:底色 + 靜態波形 + 檔名。
+ *
+ * canvas 的內在像素尺寸直接設成專案座標系的格子大小,CSS 再用 100% 縮放 ——
+ * 跟舞台本身「不用 JS 量測」的原則一致,不需要 ResizeObserver。
+ */
+function AudioPlaceholder({ clip, slot }: { clip: Clip; slot: Rect }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const w = Math.max(1, Math.round(slot.w))
+    const h = Math.max(1, Math.round(slot.h))
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    drawAudioPlaceholder(
+      ctx,
+      clip,
+      { x: 0, y: 0, w, h },
+      CLIP_COLORS[clip.id].wave,
+    )
+  }, [clip, slot.w, slot.h])
+
+  return (
+    <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
   )
 }
 

@@ -5,7 +5,7 @@ import { playbackClock } from '../lib/playbackClock'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import { Button } from './ui'
 
-const RATES = [0.25, 0.5, 1]
+const RATES = [0.25, 0.5, 0.75, 1]
 
 export function Transport() {
   const timeRef = useRef<HTMLSpanElement>(null)

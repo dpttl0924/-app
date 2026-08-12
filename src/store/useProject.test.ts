@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { playRange, useProject } from './useProject'
+import {
+  contentDurationMs,
+  countInPlan,
+  playRange,
+  timelineMap,
+  useProject,
+  type CountIn,
+} from './useProject'
+import { projectToContent, relativeToCountIn } from '../lib/timeline'
+import { MAX_BPM, MIN_BPM } from '../lib/tempo'
 import { playbackClock } from '../lib/playbackClock'
 import { DEFAULT_TRANSFORM, type Clip, type ClipId } from '../lib/types'
 
@@ -34,27 +43,215 @@ function load(a: Partial<Clip> = {}, b: Partial<Clip> = {}) {
     rangeInMs: 0,
     rangeOutMs: null,
     playing: false,
+    countIn: { enabled: false, bpm: 120, beats: 8, volume: 0.6 },
+    tempo: null,
   })
   playbackClock.currentMs = 0
 }
 
 const state = () => useProject.getState()
-const range = () => playRange(state())
+/** 剪輯的保留區間,以內容時間表示(rangeIn / rangeOut 就記在這個座標系) */
+const range = () => {
+  const s = state()
+  const contentMs = contentDurationMs(s)
+  const endMs = s.rangeOutMs ?? contentMs
+  return { startMs: s.rangeInMs, endMs, durationMs: endMs - s.rangeInMs }
+}
 
-describe('playRange', () => {
-  it('沒設過範圍時就是整個專案', () => {
-    expect(playRange({ rangeInMs: 0, rangeOutMs: null, durationMs: 30_000 })).toEqual({
-      startMs: 0,
-      endMs: 30_000,
-      durationMs: 30_000,
+describe('預備拍的相位對齊', () => {
+  const on = (bpm: number, beats: number): CountIn => ({
+    enabled: true,
+    bpm,
+    beats,
+    volume: 0.6,
+  })
+
+  it('沒偵測到速度時,就是單純在前面加 N 拍', () => {
+    const plan = countInPlan(on(120, 8), 0)
+    expect(plan.durationMs).toBeCloseTo(4000) // 8 拍 × 500ms
+    expect(plan.clickTimesMs).toHaveLength(8)
+    expect(plan.clickTimesMs[0]).toBeCloseTo(0)
+    expect(plan.clickTimesMs[7]).toBeCloseTo(3500)
+  })
+
+  it('最後一聲 click 落在歌曲第一個重拍的前一拍', () => {
+    // 這是整個功能好不好用的關鍵。錯了的話節拍器會跟歌整個錯開。
+    const bpm = 110
+    const period = 60000 / bpm
+    const phase = 320 // 歌曲第一個重拍在內容時間 320ms
+    const plan = countInPlan(on(bpm, 8), phase)
+
+    // 第一個重拍在專案時間 = 前綴 + phase
+    const firstDownbeat = plan.durationMs + phase
+    const lastClick = plan.clickTimesMs[plan.clickTimesMs.length - 1]
+    expect(firstDownbeat - lastClick).toBeCloseTo(period, 6)
+  })
+
+  it('每一聲 click 都在同一個拍點網格上', () => {
+    const bpm = 128
+    const period = 60000 / bpm
+    const plan = countInPlan(on(bpm, 16), 210)
+    for (let i = 1; i < plan.clickTimesMs.length; i++) {
+      expect(plan.clickTimesMs[i] - plan.clickTimesMs[i - 1]).toBeCloseTo(period, 6)
+    }
+  })
+
+  it('相位會讓前綴變短,但第一聲仍然從 0 開始', () => {
+    const plan = countInPlan(on(120, 8), 200)
+    expect(plan.durationMs).toBeCloseTo(4000 - 200)
+    expect(plan.clickTimesMs[0]).toBeCloseTo(0)
+    expect(plan.clickTimesMs).toHaveLength(8)
+  })
+
+  it('相位大於一拍時只取餘數,不會少掉整個小節', () => {
+    const period = 60000 / 120
+    const a = countInPlan(on(120, 8), 200)
+    const b = countInPlan(on(120, 8), 200 + period * 3)
+    expect(b.durationMs).toBeCloseTo(a.durationMs)
+    expect(b.clickTimesMs).toHaveLength(8)
+  })
+
+  it('關閉時不佔任何時間', () => {
+    expect(countInPlan({ ...on(120, 8), enabled: false }, 0)).toEqual({
+      durationMs: 0,
+      clickTimesMs: [],
     })
   })
 
+  it('拍數選項都算得出對應長度', () => {
+    for (const beats of [4, 8, 16]) {
+      const plan = countInPlan(on(120, beats), 0)
+      expect(plan.clickTimesMs).toHaveLength(beats)
+      expect(plan.durationMs).toBeCloseTo(beats * 500)
+    }
+  })
+})
+
+describe('預備拍與時間軸', () => {
+  beforeEach(() => load())
+
+  it('開啟預備拍會讓專案變長,但不動任何影片的偏移', () => {
+    const before = { a: state().clips.a!.offsetMs, b: state().clips.b!.offsetMs }
+    const durationBefore = state().durationMs
+    state().setCountIn({ enabled: true, bpm: 120, beats: 8 })
+    expect(state().durationMs).toBeCloseTo(durationBefore + 4000)
+    expect({ a: state().clips.a!.offsetMs, b: state().clips.b!.offsetMs }).toEqual(before)
+  })
+
+  it('關掉之後長度回到原本', () => {
+    const durationBefore = state().durationMs
+    state().setCountIn({ enabled: true, bpm: 120, beats: 8 })
+    state().setCountIn({ enabled: false })
+    expect(state().durationMs).toBe(durationBefore)
+  })
+
+  it('改拍數會即時反映在專案長度上', () => {
+    state().setCountIn({ enabled: true, bpm: 120, beats: 4 })
+    const four = state().durationMs
+    state().setCountIn({ beats: 16 })
+    expect(state().durationMs - four).toBeCloseTo(12 * 500)
+  })
+
+  it('先剪輯再開預備拍,預備拍要接在保留的段落前面', () => {
+    // 這是回報過的 bug:預備拍原本插在專案時間 0,
+    // 剪掉開頭之後就變成加在「被刪掉的那段」前面,離要練的段落還隔著一整段不要的內容
+    playheadAt(20_000)
+    state().splitAtPlayhead()
+    state().deleteSegment('left') // 保留內容 20s 之後
+
+    state().setCountIn({ enabled: true, bpm: 120, beats: 8 }) // 4 秒
+    const map = timelineMap(state())
+    expect(map.countInAtMs).toBe(20_000)
+    // 輸出從 20s 開始,先是 4 秒預備拍,才接內容
+    expect(playRange(state()).startMs).toBe(20_000)
+    expect(projectToContent(20_000, map)).toBe(20_000) // 預備拍期間內容凍結
+    expect(projectToContent(24_000, map)).toBe(20_000) // 預備拍結束,內容正好從保留起點接上
+    expect(projectToContent(25_000, map)).toBe(21_000)
+  })
+
+  it('迴歸測試:剪過片之後開播,節拍器排程的起算點必須是 0,不是剪輯起點', () => {
+    // 這是實際發生過的 bug:useMetronome 曾經直接拿 playbackClock.currentMs
+    // (絕對專案時間)跟 plan.durationMs(從 0 起算的預備拍長度)比較。
+    // 剪過片後 rangeInMs > 0,播放頭一開始播就已經 >= rangeInMs,
+    // 於是「播放頭是否已超過預備拍」的判斷永遠成立,排程被跳過、完全沒聲音。
+    playheadAt(20_000)
+    state().splitAtPlayhead()
+    state().deleteSegment('left') // 保留內容從 20s 開始,rangeInMs = 20000
+
+    state().setCountIn({ enabled: true, bpm: 120, beats: 8 }) // 4 秒預備拍
+    const map = timelineMap(state())
+    expect(map.countInAtMs).toBe(20_000) // 插入點確實不是 0
+
+    // 模擬 togglePlay():播放頭不在範圍內時會跳到 range.startMs
+    const startMs = playRange(state()).startMs
+    playbackClock.currentMs = startMs
+
+    // useMetronome 實際使用的換算:必須是 0,才會進入排程分支
+    const at = relativeToCountIn(playbackClock.currentMs, map)
+    expect(at).toBe(0)
+    const plan = countInPlan(state().countIn, state().tempo?.phaseMs ?? 0)
+    expect(at).toBeLessThan(plan.durationMs) // 沒有這一步就會被誤判成「已播完預備拍」
+  })
+
+  it('開關預備拍不會動到已經剪好的範圍', () => {
+    playheadAt(15_000)
+    state().splitAtPlayhead()
+    state().deleteSegment('left')
+    const before = { in: state().rangeInMs, out: state().rangeOutMs }
+
+    state().setCountIn({ enabled: true, bpm: 120, beats: 16 })
+    state().setCountIn({ enabled: false })
+    expect({ in: state().rangeInMs, out: state().rangeOutMs }).toEqual(before)
+  })
+
+  it('BPM 會被夾在合理範圍內', () => {
+    state().setCountIn({ bpm: 5 })
+    expect(state().countIn.bpm).toBe(MIN_BPM)
+    state().setCountIn({ bpm: 9999 })
+    expect(state().countIn.bpm).toBe(MAX_BPM)
+  })
+})
+
+describe('playRange', () => {
+  const noCountIn = { enabled: false, bpm: 120, beats: 8, volume: 0.6 }
+
+  it('沒設過範圍時就是整個專案', () => {
+    expect(
+      playRange({
+        rangeInMs: 0,
+        rangeOutMs: null,
+        durationMs: 30_000,
+        countIn: noCountIn,
+        tempo: null,
+      }),
+    ).toEqual({ startMs: 0, endMs: 30_000, durationMs: 30_000 })
+  })
+
   it('rangeOutMs 為 null 代表「到結尾」,載入更長的影片時會自動延伸', () => {
-    const before = playRange({ rangeInMs: 5000, rangeOutMs: null, durationMs: 30_000 })
-    const after = playRange({ rangeInMs: 5000, rangeOutMs: null, durationMs: 90_000 })
-    expect(before.endMs).toBe(30_000)
-    expect(after.endMs).toBe(90_000)
+    const at = (durationMs: number) =>
+      playRange({
+        rangeInMs: 5000,
+        rangeOutMs: null,
+        durationMs,
+        countIn: noCountIn,
+        tempo: null,
+      })
+    expect(at(30_000).endMs).toBe(30_000)
+    expect(at(90_000).endMs).toBe(90_000)
+  })
+
+  it('輸出範圍從剪輯起點開始 —— 那正是預備拍的開頭', () => {
+    // 專案總長 = 內容 30s + 預備拍 4s;保留內容 [10s, 20s]
+    const range = playRange({
+      rangeInMs: 10_000,
+      rangeOutMs: 20_000,
+      durationMs: 34_000,
+      countIn: { enabled: true, bpm: 120, beats: 8, volume: 0.6 },
+      tempo: null,
+    })
+    expect(range.startMs).toBe(10_000) // 預備拍的開頭
+    expect(range.endMs).toBe(24_000) // 保留內容的結尾往後推一個預備拍
+    expect(range.durationMs).toBe(14_000) // 4s 預備拍 + 10s 內容
   })
 })
 
