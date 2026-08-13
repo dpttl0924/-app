@@ -54,11 +54,67 @@ export const DEADBAND_S = 0.04
  */
 export const TRIM_GAIN = 2
 
+/**
+ * 速度修正的量化階距。
+ *
+ * 這是手機上「從屬影片會卡頓」的解方。修正量本來是連續值,誤差每幀都在變,
+ * 於是 playbackRate 幾乎每幀都被改寫一次 —— 桌機吃得下,但手機每改一次
+ * 都要重新對時音視訊管線,結果就是被校正的那一支(通常是 B)一直抖。
+ *
+ * 量化成 1% 的階梯之後,只有跨過階距時才會真的寫入,寫入次數少了好幾個數量級。
+ * 對收斂速度幾乎沒有影響 —— 修正量本來就是控制訊號,差 1% 不影響追上的時間。
+ */
+export const RATE_STEP = 0.01
+
+/**
+ * 在這段時間內硬 seek 超過 STRAIN_SEEK_LIMIT 次,就判定這台裝置追不上。
+ *
+ * 正常情況下硬 seek 應該非常罕見(只在拖完時間軸之類的時候發生一次)。
+ * 短時間內反覆 seek 代表從屬影片根本解碼不贏 —— 手機同時解兩支高解析度影片
+ * 就會這樣。這時候繼續 seek 只會讓畫面一直停頓,不如放手讓它漂移。
+ */
+export const STRAIN_WINDOW_MS = 5000
+export const STRAIN_SEEK_LIMIT = 3
+
 export interface DriftCorrection {
   /** 是否要硬 seek 回去 */
   seek: boolean
   /** 這一幀該套用的 playbackRate */
   rate: number
+}
+
+/**
+ * 追蹤硬 seek 的頻率,判斷裝置是不是根本追不上。
+ *
+ * 一旦判定追不上就停止硬 seek:反覆 seek 造成的停頓,比讓兩支影片稍微不同步
+ * 還要難用得多。同時把狀態透出去,好讓 UI 告訴使用者為什麼會這樣 ——
+ * 沒有說明的話,使用者只會覺得「這個網站很爛」。
+ */
+export class SeekStrainMonitor {
+  private timestamps: number[] = []
+
+  /** 記錄一次硬 seek。回傳現在是否已經判定為追不上。 */
+  record(nowMs: number): boolean {
+    this.timestamps.push(nowMs)
+    this.prune(nowMs)
+    return this.strained(nowMs)
+  }
+
+  strained(nowMs: number): boolean {
+    this.prune(nowMs)
+    return this.timestamps.length >= STRAIN_SEEK_LIMIT
+  }
+
+  reset() {
+    this.timestamps.length = 0
+  }
+
+  private prune(nowMs: number) {
+    const cutoff = nowMs - STRAIN_WINDOW_MS
+    while (this.timestamps.length > 0 && this.timestamps[0] < cutoff) {
+      this.timestamps.shift()
+    }
+  }
 }
 
 /**
@@ -80,7 +136,9 @@ export function correctDrift(
   }
   // 只對超出死區的部分做修正,修正量才會在死區邊界連續、不會突然跳一階
   const excess = Math.sign(errorSec) * (magnitude - DEADBAND_S)
-  const trim = clamp(excess * TRIM_GAIN, -maxTrim, maxTrim)
+  const raw = clamp(excess * TRIM_GAIN, -maxTrim, maxTrim)
+  // 量化成階梯,playbackRate 才不會每幀都被改寫(見 RATE_STEP)
+  const trim = Math.round(raw / RATE_STEP) * RATE_STEP
   return { seek: false, rate: baseRate * (1 + trim) }
 }
 

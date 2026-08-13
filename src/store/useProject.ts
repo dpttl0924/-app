@@ -3,6 +3,7 @@ import { alignOnsets, analyzeAudio } from '../lib/audio'
 import { projectDuration } from '../lib/layout'
 import { playbackClock } from '../lib/playbackClock'
 import { projectToContent, type TimelineMap } from '../lib/timeline'
+import { describeLoadFailure } from '../lib/mediaSupport'
 import { MAX_BPM, MIN_BPM, MIN_CONFIDENCE, detectTempo, type TempoEstimate } from '../lib/tempo'
 import {
   ASPECT_SIZES,
@@ -89,6 +90,13 @@ interface ProjectState {
   align: AlignState
   /** 載入中的階段文字。手機上讀大影片要好幾秒,沒有回饋看起來就像當掉了。 */
   loading: { id: ClipId; stage: string } | null
+  /**
+   * 這台裝置同時解碼兩支影片時追不上。
+   *
+   * 沒有這個提示的話,使用者只會看到其中一支一直卡,卻不知道是裝置能力的問題,
+   * 也不知道換小一點的影片就會好。
+   */
+  syncStrained: boolean
 
   loadClip: (id: ClipId, file: File) => Promise<void>
   removeClip: (id: ClipId) => void
@@ -107,6 +115,7 @@ interface ProjectState {
   nudgeOffset: (id: ClipId, deltaMs: number) => void
   detectTempoFromAudio: () => void
   setCountIn: (patch: Partial<CountIn>) => void
+  setSyncStrained: (v: boolean) => void
 
   splitAtPlayhead: () => void
   cancelSplit: () => void
@@ -137,7 +146,7 @@ interface ProjectState {
  * `<video>` 讀純音檔完全沒問題,只是 videoWidth/videoHeight 會回傳 0,
  * 這正是 `isAudioOnly()` 用來判斷的依據,不需要額外檢查副檔名或 MIME type。
  */
-function probeMedia(url: string) {
+function probeMedia(url: string, fileName: string) {
   return new Promise<{ durationMs: number; width: number; height: number }>(
     (resolve, reject) => {
       const el = document.createElement('video')
@@ -152,7 +161,9 @@ function probeMedia(url: string) {
         el.removeAttribute('src')
         el.load()
       }
-      el.onerror = () => reject(new Error('無法讀取檔案,格式可能不支援'))
+      // 訊息要講清楚是容器不支援還是編碼不支援 —— iPhone 的 .mov 兩種都可能中
+      el.onerror = () =>
+        reject(new Error(describeLoadFailure(fileName, (t) => el.canPlayType(t))))
       el.src = url
     },
   )
@@ -309,6 +320,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
 
   align: IDLE_ALIGN,
   loading: null,
+  syncStrained: false,
 
   async loadClip(id, file) {
     const prev = get().clips[id]
@@ -318,7 +330,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
     set({ loading: { id, stage: `讀取檔案(${sizeMb.toFixed(0)} MB)…` } })
     const url = URL.createObjectURL(file)
     try {
-      const meta = await probeMedia(url)
+      const meta = await probeMedia(url, file.name)
       const clip: Clip = {
         id,
         url,
@@ -335,7 +347,13 @@ export const useProject = create<ProjectState>()((set, get) => ({
       }
       set((s) => {
         const clips = { ...s.clips, [id]: clip }
-        return { clips, ...withDuration({ ...s, clips }), loading: null }
+        // 換了素材就重新評估這台裝置追不追得上,不要留著上一組的判定
+        return {
+          clips,
+          ...withDuration({ ...s, clips }),
+          loading: null,
+          syncStrained: false,
+        }
       })
 
       // 音訊分析比較慢,不擋 UI。分析完波形才會出現在時間軸上。
@@ -500,6 +518,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
       }
       return { countIn, ...withDuration({ ...s, countIn }) }
     }),
+
+  setSyncStrained: (syncStrained) => set({ syncStrained }),
 
   splitAtPlayhead: () =>
     set((s) => {

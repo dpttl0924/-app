@@ -10,11 +10,11 @@
  */
 
 /** 重音與弱拍的頻率,聽得出強弱才數得下去 */
-const ACCENT_HZ = 1600
-const NORMAL_HZ = 1000
-const CLICK_SECONDS = 0.04
+const ACCENT_HZ = 1000;
+const NORMAL_HZ = 1000;
+const CLICK_SECONDS = 0.04;
 /** 每幾拍一個重音 */
-const BEATS_PER_BAR = 4
+const BEATS_PER_BAR = 4;
 
 /**
  * 第幾聲是重音(index 從 0 開始數)。
@@ -25,7 +25,7 @@ const BEATS_PER_BAR = 4
  * 這樣也保證最後一聲一定是重音,而那正好是歌曲第一個重拍的前一拍。
  */
 export function isAccent(index: number): boolean {
-  return (index + 1) % BEATS_PER_BAR === 0
+  return (index + 1) % BEATS_PER_BAR === 0;
 }
 
 /**
@@ -43,24 +43,27 @@ export function createClick(
   volume: number,
   destinations: AudioNode[],
 ): OscillatorNode {
-  const osc = ctx.createOscillator()
-  const gain = ctx.createGain()
-  osc.frequency.value = isAccent(index) ? ACCENT_HZ : NORMAL_HZ
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.frequency.value = isAccent(index) ? ACCENT_HZ : NORMAL_HZ;
   // 直接切斷會有 pop 聲,用短斜坡收尾
-  gain.gain.setValueAtTime(0.0001, whenSec)
-  gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, volume), whenSec + 0.002)
-  gain.gain.exponentialRampToValueAtTime(0.0001, whenSec + CLICK_SECONDS)
+  gain.gain.setValueAtTime(0.0001, whenSec);
+  gain.gain.exponentialRampToValueAtTime(
+    Math.max(0.0002, volume),
+    whenSec + 0.002,
+  );
+  gain.gain.exponentialRampToValueAtTime(0.0001, whenSec + CLICK_SECONDS);
 
-  osc.connect(gain)
-  for (const d of destinations) gain.connect(d)
-  osc.start(whenSec)
-  osc.stop(whenSec + CLICK_SECONDS + 0.01)
-  return osc
+  osc.connect(gain);
+  for (const d of destinations) gain.connect(d);
+  osc.start(whenSec);
+  osc.stop(whenSec + CLICK_SECONDS + 0.01);
+  return osc;
 }
 
 export interface ScheduledMetronome {
   /** 取消所有還沒響的 click */
-  cancel: () => void
+  cancel: () => void;
 }
 
 /**
@@ -79,33 +82,33 @@ export function scheduleClicks(
     rate = 1,
     destinations,
   }: {
-    startOffsetMs?: number
-    volume?: number
-    rate?: number
-    destinations: AudioNode[]
+    startOffsetMs?: number;
+    volume?: number;
+    rate?: number;
+    destinations: AudioNode[];
   },
 ): ScheduledMetronome {
-  const nodes: OscillatorNode[] = []
-  const base = ctx.currentTime
+  const nodes: OscillatorNode[] = [];
+  const base = ctx.currentTime;
 
   clickTimesMs.forEach((tMs, index) => {
     // 播放頭已經越過的那幾聲不用補放
-    const aheadMs = (tMs - startOffsetMs) / rate
-    if (aheadMs < -1e-6) return
-    const at = base + aheadMs / 1000
-    nodes.push(createClick(ctx, index, at, volume, destinations))
-  })
+    const aheadMs = (tMs - startOffsetMs) / rate;
+    if (aheadMs < -1e-6) return;
+    const at = base + aheadMs / 1000;
+    nodes.push(createClick(ctx, index, at, volume, destinations));
+  });
 
   return {
     cancel: () => {
       for (const osc of nodes) {
         try {
-          osc.stop()
+          osc.stop();
         } catch {
           // 已經停過就算了
         }
       }
-      nodes.length = 0
+      nodes.length = 0;
     },
-  }
+  };
 }

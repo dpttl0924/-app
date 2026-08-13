@@ -4,6 +4,10 @@ import {
   DEADBAND_S,
   HARD_SEEK_S,
   MUTED_MAX_TRIM,
+  RATE_STEP,
+  STRAIN_SEEK_LIMIT,
+  STRAIN_WINDOW_MS,
+  SeekStrainMonitor,
   correctDrift,
 } from './sync'
 
@@ -97,6 +101,30 @@ describe('correctDrift', () => {
     expect(audible).toBeLessThan(10)
   })
 
+  it('修正量是量化的階梯,不是連續值', () => {
+    // 手機上「從屬影片卡頓」的根因:連續值會讓 playbackRate 幾乎每幀都被改寫,
+    // 每次改寫都要重新對時媒體管線。量化之後只有跨階時才會真的寫入。
+    for (const errorSec of [0.05, 0.07, 0.09, 0.12, 0.15, 0.2]) {
+      const trim = correctDrift(errorSec, 1, MUTED_MAX_TRIM).rate - 1
+      const steps = trim / RATE_STEP
+      expect(Math.abs(steps - Math.round(steps))).toBeLessThan(1e-9)
+    }
+  })
+
+  it('誤差連續變化時,實際會用到的速度值只有少數幾個', () => {
+    const rates = new Set<number>()
+    // 掃過死區到 seek 門檻之間的整段範圍
+    for (let e = DEADBAND_S; e < HARD_SEEK_S; e += 0.0005) {
+      rates.add(Number(correctDrift(e, 1, MUTED_MAX_TRIM).rate.toFixed(6)))
+    }
+    // 上限 10% ÷ 每階 1% = 最多 11 種(含不修正)
+    expect(rates.size).toBeLessThanOrEqual(MUTED_MAX_TRIM / RATE_STEP + 1)
+  })
+
+  it('量化沒有破壞收斂 —— 最差情況仍在 3 秒內追上', () => {
+    expect(secondsToConverge(HARD_SEEK_S - 0.01, MUTED_MAX_TRIM)).toBeLessThan(3)
+  })
+
   it('收斂是單向的,不會衝過頭來回震盪', () => {
     let error = 0.2
     let previous = Math.abs(error)
@@ -107,5 +135,43 @@ describe('correctDrift', () => {
       expect(now).toBeLessThanOrEqual(previous + 1e-9)
       previous = now
     }
+  })
+})
+
+describe('SeekStrainMonitor', () => {
+  it('偶爾一次硬 seek 不算追不上', () => {
+    // 拖完時間軸之後 seek 一次是正常的,不該因此判定裝置有問題
+    const m = new SeekStrainMonitor()
+    expect(m.record(1000)).toBe(false)
+    expect(m.strained(1000)).toBe(false)
+  })
+
+  it('短時間內反覆 seek 就判定追不上', () => {
+    const m = new SeekStrainMonitor()
+    let strained = false
+    for (let i = 0; i < STRAIN_SEEK_LIMIT; i++) strained = m.record(1000 + i * 100)
+    expect(strained).toBe(true)
+  })
+
+  it('久久才 seek 一次不會累積成誤判', () => {
+    const m = new SeekStrainMonitor()
+    // 每次都間隔超過觀察窗,舊紀錄要被丟掉
+    for (let i = 0; i < 10; i++) {
+      expect(m.record(i * (STRAIN_WINDOW_MS + 1000))).toBe(false)
+    }
+  })
+
+  it('時間往前推進之後,舊的判定會自己解除', () => {
+    const m = new SeekStrainMonitor()
+    for (let i = 0; i < STRAIN_SEEK_LIMIT; i++) m.record(1000 + i * 100)
+    expect(m.strained(1500)).toBe(true)
+    expect(m.strained(1500 + STRAIN_WINDOW_MS + 1)).toBe(false)
+  })
+
+  it('reset 之後重新計算', () => {
+    const m = new SeekStrainMonitor()
+    for (let i = 0; i < STRAIN_SEEK_LIMIT; i++) m.record(1000 + i * 100)
+    m.reset()
+    expect(m.strained(1500)).toBe(false)
   })
 })

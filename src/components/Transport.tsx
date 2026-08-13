@@ -19,6 +19,7 @@ export function Transport() {
   const setRate = useProject((s) => s.setRate)
   const setPlaying = useProject((s) => s.setPlaying)
   const toggleMirror = useProject((s) => s.toggleMirror)
+  const syncStrained = useProject((s) => s.syncStrained)
 
   // 時間讀數每幀都變,走 DOM 直寫,不讓 React 每秒 render 60 次。
   // 讀 playbackClock 而非 store,後者是 10Hz 的節流鏡像。
@@ -112,6 +113,17 @@ export function Transport() {
           ))}
         </div>
       </div>
+
+      {/*
+        裝置解不動兩支影片時會反覆停頓,但畫面上看不出原因。
+        與其讓人以為是網站壞了,不如講清楚並給可行的解法。
+      */}
+      {syncStrained && (
+        <p className="rounded-md bg-amber-400/10 px-2 py-1.5 text-[11px] leading-relaxed text-amber-200/90 ring-1 ring-amber-400/30">
+          這台裝置同時解碼兩支影片有點吃力,其中一支可能會卡頓。
+          可以把其中一支換成解析度低一點的檔案,或把不用看的那支音量調到 0。
+        </p>
+      )}
 
       {/* 小螢幕上沒有實體鍵盤,這行提示只會佔掉舞台的空間 */}
       {wide && (

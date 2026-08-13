@@ -4,7 +4,12 @@ import { playRange, timelineMap, useProject } from '../store/useProject'
 import { contentToProject, isInCountIn, projectToContent } from '../lib/timeline'
 import { resolveClipTime } from '../lib/layout'
 import { playbackClock } from '../lib/playbackClock'
-import { AUDIBLE_MAX_TRIM, MUTED_MAX_TRIM, correctDrift } from '../lib/sync'
+import {
+  AUDIBLE_MAX_TRIM,
+  MUTED_MAX_TRIM,
+  SeekStrainMonitor,
+  correctDrift,
+} from '../lib/sync'
 import type { Clip, ClipId } from '../lib/types'
 
 export type VideoRefs = Record<ClipId, RefObject<HTMLVideoElement | null>>
@@ -34,6 +39,7 @@ export function usePlaybackEngine(refs: VideoRefs) {
     let raf = 0
     let last = performance.now()
     let lastStoreSync = 0
+    const strain = new SeekStrainMonitor()
 
     const tick = () => {
       const now = performance.now()
@@ -101,7 +107,11 @@ export function usePlaybackEngine(refs: VideoRefs) {
         // 靜音的那支可以用大一點的修正幅度,反正沒有聲音會被聽出來
         const maxTrim = clip.volume > 0.01 ? AUDIBLE_MAX_TRIM : MUTED_MAX_TRIM
         const correction = correctDrift(targetSec - el.currentTime, rate, maxTrim)
-        if (correction.seek) el.currentTime = targetSec
+        // 已經判定裝置追不上時就不再硬 seek —— 反覆 seek 的停頓比稍微不同步難用得多
+        if (correction.seek && !strain.strained(now)) {
+          el.currentTime = targetSec
+          if (strain.record(now)) useProject.getState().setSyncStrained(true)
+        }
         setRate(el, correction.rate)
       }
 

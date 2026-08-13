@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { useProject } from '../store/useProject'
 import { formatSeconds, formatTime } from '../lib/format'
 import { MAX_CLIP_SCALE, MIN_CLIP_SCALE, isAudioOnly, type ClipId } from '../lib/types'
+import { MEDIA_ACCEPT } from '../lib/mediaSupport'
 import { Button, Field, Panel, Slider, inputClass } from './ui'
 
 const FPS_OPTIONS = [24, 25, 30, 50, 60]
@@ -57,12 +58,16 @@ export function ClipPanel({ id }: { id: ClipId }) {
         而且這裡改用 <label htmlFor> 觸發,不靠 JS 的 .click() —— 那在 iPhone 上
         是已知會出問題的組合(選完照片回不到網頁、按打勾沒反應)。
       */}
-      {/* 也接受純音檔:只有參考音樂、沒有舞蹈影片時,還是可以放進來對齊、剪輯、匯出 */}
+      {/*
+        accept 同時列 MIME 萬用字元與副檔名:iPhone 的 .mov 常常被回報成
+        空的 MIME type,只寫 video/* 的話檔案會被反灰選不到。
+        也接受純音檔 —— 只有參考音樂、沒有舞蹈影片時仍然可以對齊、剪輯、匯出。
+      */}
       <input
         id={inputId}
         ref={fileRef}
         type="file"
-        accept="video/*,audio/*"
+        accept={MEDIA_ACCEPT}
         className="sr-only"
         onChange={(e) => void pick(e.target.files?.[0])}
       />
