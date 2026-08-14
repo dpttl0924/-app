@@ -159,7 +159,11 @@ export async function exportComposite(opts: ExportOptions): Promise<ExportResult
       ctx.save()
       // 換算比例,讓 renderFrame 永遠在專案座標系裡工作
       ctx.scale(canvas.width / size.w, canvas.height / size.h)
-      renderFrame(ctx, { ...s, currentMs, map: timelineMap(s) }, videos)
+      // renderFrame 現在收的是通用的畫面來源,「這一格能不能用」由呼叫端判斷
+      renderFrame(ctx, { ...s, currentMs, map: timelineMap(s) }, {
+        a: readyOrNull(videos.a),
+        b: readyOrNull(videos.b),
+      })
       ctx.restore()
 
       onProgress?.(
@@ -189,6 +193,11 @@ export async function exportComposite(opts: ExportOptions): Promise<ExportResult
 
 function makeEven(n: number) {
   return Math.max(2, Math.round(n / 2) * 2)
+}
+
+/** readyState < 2 的 video 畫出來是空白,當成「這一格沒有畫面」 */
+function readyOrNull(el: HTMLVideoElement | null): HTMLVideoElement | null {
+  return el && el.readyState >= 2 ? el : null
 }
 
 export function downloadBlob(blob: Blob, filename: string) {

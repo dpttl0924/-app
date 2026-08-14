@@ -9,6 +9,7 @@ import { AlignPanel } from "./components/AlignPanel";
 import { AnnotationPanel } from "./components/AnnotationPanel";
 import { CountInPanel } from "./components/CountInPanel";
 import { TrimPanel } from "./components/TrimPanel";
+import { CodecPanel } from "./components/CodecPanel";
 import { ExportPanel } from "./components/ExportPanel";
 import { usePlaybackEngine } from "./hooks/usePlaybackEngine";
 import { useMetronome } from "./hooks/useMetronome";
@@ -74,7 +75,12 @@ export default function App() {
       </>
     ),
     text: <AnnotationPanel />,
-    export: <ExportPanel refs={refs} />,
+    export: (
+      <>
+        <CodecPanel />
+        <ExportPanel refs={refs} />
+      </>
+    ),
   };
 
   if (isDesktop) {
@@ -95,6 +101,7 @@ export default function App() {
             <CountInPanel />
             <TrimPanel />
             <AnnotationPanel />
+            <CodecPanel />
             <ExportPanel refs={refs} />
           </aside>
         </main>

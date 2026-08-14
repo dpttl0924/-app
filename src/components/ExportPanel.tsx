@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { downloadBlob, exportComposite } from '../lib/export'
+import { exportWithWebCodecs } from '../lib/webcodecs/videoExport'
 import { exportAudio } from '../lib/audioExport'
 import { playRange, useProject } from '../store/useProject'
 import { formatSeconds, formatTime } from '../lib/format'
@@ -27,6 +28,9 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
   const [audioBusy, setAudioBusy] = useState(false)
   const [audioProgress, setAudioProgress] = useState(0)
   const [error, setError] = useState('')
+  const [note, setNote] = useState('')
+  /** 退回即時錄製的原因 —— 匯出還是成功了,所以不是 error */
+  const [warn, setWarn] = useState('')
 
   const runAudio = async () => {
     setAudioBusy(true)
@@ -43,20 +47,40 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
     }
   }
 
+  /**
+   * 先試 WebCodecs 的離線編碼,不行才退回 MediaRecorder 即時錄製。
+   *
+   * 退路一定要留:WebCodecs 的編碼器支援度因瀏覽器而異,
+   * 而且失敗的話使用者只會看到「匯出壞了」,不會知道是編碼器的問題。
+   */
   const run = async () => {
     setBusy(true)
     setError('')
     setProgress(0)
+    setNote('')
+    setWarn('')
     try {
-      const { blob, extension } = await exportComposite({
-        videos: { a: refs.a.current, b: refs.b.current },
-        scale,
-        fps: 30,
-        onProgress: setProgress,
-      })
-      downloadBlob(blob, `dance-compare-${Date.now()}.${extension}`)
+      const result = await exportWithWebCodecs({ scale, fps: 30, onProgress: setProgress })
+      downloadBlob(result.blob, `dance-compare-${Date.now()}.${result.extension}`)
+      const speedup = range.durationMs / result.elapsedMs
+      setNote(
+        `離線編碼完成:${result.frames} 格、耗時 ${(result.elapsedMs / 1000).toFixed(1)}s,` +
+          `約為即時錄製的 ${speedup.toFixed(1)} 倍速(${result.choice.container.toUpperCase()} / ${result.choice.video.toUpperCase()})`,
+      )
     } catch (err) {
-      setError(err instanceof Error ? err.message : '匯出失敗')
+      const reason = err instanceof Error ? err.message : '未知原因'
+      setWarn(`${reason}。改用即時錄製,需要一直開著這個畫面到跑完。`)
+      try {
+        const { blob, extension } = await exportComposite({
+          videos: { a: refs.a.current, b: refs.b.current },
+          scale,
+          fps: 30,
+          onProgress: setProgress,
+        })
+        downloadBlob(blob, `dance-compare-${Date.now()}.${extension}`)
+      } catch (fallbackErr) {
+        setError(fallbackErr instanceof Error ? fallbackErr.message : '匯出失敗')
+      }
     } finally {
       setBusy(false)
       setProgress(0)
@@ -86,7 +110,7 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
         disabled={durationMs <= 0 || busy}
         onClick={() => void run()}
       >
-        {busy ? `錄製中 ${(progress * 100).toFixed(0)}%` : '匯出'}
+        {busy ? `編碼中 ${(progress * 100).toFixed(0)}%` : '匯出影片'}
       </Button>
 
       {busy && (
@@ -98,6 +122,8 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
         </div>
       )}
 
+      {note && <p className="text-[11px] leading-relaxed text-emerald-300">{note}</p>}
+      {warn && <p className="text-[11px] leading-relaxed text-amber-300">{warn}</p>}
       {error && <p className="text-[11px] text-red-400">{error}</p>}
 
       <div className="border-t border-white/10 pt-2">
@@ -116,10 +142,10 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
       </div>
 
       <p className="text-[11px] leading-relaxed text-white/35">
-        目前走 MediaRecorder 即時錄製,匯出時間約等於輸出範圍的長度(
-        {formatTime(range.durationMs)})。錄製期間請讓畫面保持開啟 ——
-        切到其他 App 或鎖螢幕,瀏覽器會暫停繪製導致錄到空白。
-        下一版換 WebCodecs 離線編碼就不受這個限制。
+        優先走 WebCodecs 離線編碼:影格直接從檔案解碼,不必即時播放,
+        所以不受「切到其他 App 就錄到空白」的限制。
+        編不出來時會自動退回即時錄製,那條路才需要一直開著畫面
+        (輸出長度 {formatTime(range.durationMs)})。
       </p>
     </Panel>
   )

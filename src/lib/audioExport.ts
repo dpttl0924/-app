@@ -32,12 +32,20 @@ async function decodeClip(ctx: BaseAudioContext, clip: Clip): Promise<AudioBuffe
   }
 }
 
-export async function exportAudio(
+/**
+ * 把整個專案的聲音離線混成一段 AudioBuffer:兩支素材的音訊 + 預備拍的節拍器。
+ *
+ * 抽出來是因為有兩個消費端 —— 純音訊匯出(寫成 WAV)與 WebCodecs 影片匯出
+ * (餵給 AudioEncoder)。混音邏輯只寫一份,兩邊的聲音才不會有一天開始不一樣。
+ *
+ * 沒有任何有聲來源時回傳 null,呼叫端自己決定要不要輸出無聲軌。
+ */
+export async function renderMixedAudio(
   onProgress?: (ratio: number) => void,
-): Promise<AudioExportResult> {
+): Promise<AudioBuffer | null> {
   const state = useProject.getState()
   const range = playRange(state)
-  if (range.durationMs <= 0) throw new Error('輸出範圍是空的')
+  if (range.durationMs <= 0) return null
 
   const frames = Math.ceil((range.durationMs / 1000) * OUTPUT_SAMPLE_RATE)
   const ctx = new OfflineAudioContext(OUTPUT_CHANNELS, frames, OUTPUT_SAMPLE_RATE)
@@ -47,7 +55,6 @@ export async function exportAudio(
 
   onProgress?.(0.05)
 
-  // 影片的聲音
   const ids: ClipId[] = ['a', 'b']
   let mixed = 0
   for (const id of ids) {
@@ -57,11 +64,11 @@ export async function exportAudio(
     const buffer = await decodeClip(ctx, clip)
     if (!buffer) continue
 
-    // 這支影片從內容時間 offsetMs 開始;保留的段落從 keepFromMs 開始。
+    // 這支素材從內容時間 offsetMs 開始;保留的段落從 keepFromMs 開始。
     // 兩者取晚的那個當作實際要放的起點。
     const startContentMs = Math.max(keepFromMs, clip.offsetMs)
     const whenSec = (countInMs + startContentMs - keepFromMs) / 1000
-    // 起點落在影片中間的話,從 buffer 的對應位置切進去
+    // 起點落在素材中間的話,從 buffer 的對應位置切進去
     const seekSec = (startContentMs - clip.offsetMs) / 1000
     if (seekSec >= buffer.duration) continue
 
@@ -77,15 +84,30 @@ export async function exportAudio(
 
   // 節拍器:輸出的 0 秒就是預備拍的開頭,click 的時間可以直接用
   const plan = countInPlan(state.countIn, state.tempo?.phaseMs ?? 0)
+  let clicks = 0
   plan.clickTimesMs.forEach((tMs, index) => {
     const whenSec = tMs / 1000
     if (whenSec >= range.durationMs / 1000) return
     // 與預覽共用同一份,音色與重音規則不會分岔
     createClick(ctx, index, whenSec, state.countIn.volume, [ctx.destination])
+    clicks++
   })
 
+  if (mixed === 0 && clicks === 0) return null
+
   onProgress?.(0.5)
-  const rendered = await ctx.startRendering()
+  return ctx.startRendering()
+}
+
+export async function exportAudio(
+  onProgress?: (ratio: number) => void,
+): Promise<AudioExportResult> {
+  const state = useProject.getState()
+  const range = playRange(state)
+  if (range.durationMs <= 0) throw new Error('輸出範圍是空的')
+
+  const rendered = await renderMixedAudio(onProgress)
+  if (!rendered) throw new Error('沒有可匯出的聲音')
   onProgress?.(0.85)
   const blob = encodeWav(rendered)
   onProgress?.(1)
