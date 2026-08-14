@@ -60,13 +60,14 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
     setNote('')
     setWarn('')
     try {
-      const result = await exportWithWebCodecs({ scale, fps: 30, onProgress: setProgress })
+      const result = await exportWithWebCodecs({ scale, onProgress: setProgress })
       downloadBlob(result.blob, `dance-compare-${Date.now()}.${result.extension}`)
       const speedup = range.durationMs / result.elapsedMs
       setNote(
-        `離線編碼完成:${result.frames} 格、耗時 ${(result.elapsedMs / 1000).toFixed(1)}s,` +
+        `離線編碼完成:${result.frames} 格 @ ${result.fps}fps、耗時 ${(result.elapsedMs / 1000).toFixed(1)}s,` +
           `約為即時錄製的 ${speedup.toFixed(1)} 倍速(${result.choice.container.toUpperCase()} / ${result.choice.video.toUpperCase()})`,
       )
+      if (result.judder) setWarn(result.judder)
     } catch (err) {
       const reason = err instanceof Error ? err.message : '未知原因'
       setWarn(`${reason}。改用即時錄製,需要一直開著這個畫面到跑完。`)

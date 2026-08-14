@@ -7,7 +7,12 @@ import {
 } from 'mediabunny'
 import { detectCapabilities, outputFormatFor, type CodecChoice } from './capabilities'
 import { createFrameSource, type FrameSource } from './frameSource'
-import { probeDecodability, summariseBlockers } from './decodeProbe'
+import {
+  chooseOutputFps,
+  probeDecodability,
+  summariseBlockers,
+  summariseTiming,
+} from './decodeProbe'
 import { renderFrame } from '../renderer'
 import { resolveClipTime } from '../layout'
 import { projectToContent } from '../timeline'
@@ -33,11 +38,18 @@ export interface WebCodecsExportResult {
   elapsedMs: number
   frames: number
   choice: CodecChoice
+  /** 實際使用的輸出格率 —— 沒指定的話是跟著素材決定的 */
+  fps: number
+  /** 素材格率與輸出格率除不盡時的說明,沒問題時是 null */
+  judder: string | null
+  /** 每支素材實際取到的影格統計 —— 重複與跳格就是卡頓 */
+  stats: Record<ClipId, FrameStats>
 }
 
 export interface WebCodecsExportOptions {
   /** 相對於專案解析度的縮放 */
   scale?: number
+  /** 不給的話依素材的實際格率自動決定 */
   fps?: number
   onProgress?: (ratio: number) => void
   signal?: AbortSignal
@@ -55,7 +67,7 @@ const makeEven = (n: number) => Math.max(2, Math.round(n / 2) * 2)
 export async function exportWithWebCodecs(
   opts: WebCodecsExportOptions = {},
 ): Promise<WebCodecsExportResult> {
-  const { scale = 1, fps = 30, onProgress, signal } = opts
+  const { scale = 1, onProgress, signal } = opts
   const caps = await detectCapabilities()
   if (!caps.choice) {
     throw new WebCodecsUnavailableError(
@@ -71,8 +83,6 @@ export async function exportWithWebCodecs(
 
   const size = ASPECT_SIZES[state.aspect]
   const map = timelineMap(state)
-  const frameMs = 1000 / fps
-  const frameCount = Math.max(1, Math.round(range.durationMs / frameMs))
 
   const canvas = document.createElement('canvas')
   canvas.width = makeEven(size.w * scale)
@@ -80,23 +90,20 @@ export async function exportWithWebCodecs(
   const ctx = canvas.getContext('2d', { alpha: false })
   if (!ctx) throw new Error('無法建立 canvas context')
 
-  // 每支素材要在哪些輸出格出現、對應到自己的第幾秒。
-  // 先算好整份清單,才能餵給 canvasesAtTimestamps() 走循序解碼的快路。
-  const schedules = planFrameSchedules(state, map, range.startMs, frameMs, frameCount)
-
-  const sources: Partial<Record<ClipId, FrameSource>> = {}
   const started = performance.now()
 
-  // 先把素材讀進來檢查解碼能力,再開始編碼。
+  // 先把素材讀進來檢查,再開始編碼。
   //
-  // 順序很重要:一旦 output.start() 之後才失敗,使用者已經等了一段時間,
-  // 而且只會拿到一句沒有資訊的「Decoding error」。先檢查的話,
-  // 退回即時錄製幾乎是瞬間的,而且說得出是哪一支、什麼編碼。
+  // 順序很重要,有兩個原因:
+  // 一是失敗要早 —— 一旦 output.start() 之後才炸,使用者已經等了一段時間,
+  // 而且只會拿到一句沒有資訊的「Decoding error」;先檢查的話退回即時錄製
+  // 幾乎是瞬間的,而且說得出是哪一支、什麼編碼。
+  // 二是輸出格率要看素材的實際格率決定,那也得先讀過檔案才知道。
   const blobs: Partial<Record<ClipId, Blob>> = {}
   const probes = []
   for (const id of ['a', 'b'] as ClipId[]) {
     const clip = state.clips[id]
-    if (!clip || schedules[id].timestamps.length === 0) continue
+    if (!clip || isAudioOnly(clip)) continue
     const blob = await fetch(clip.url).then((r) => r.blob())
     blobs[id] = blob
     probes.push(await probeDecodability(id, blob))
@@ -104,6 +111,31 @@ export async function exportWithWebCodecs(
 
   const blocked = summariseBlockers(probes)
   if (blocked) throw new WebCodecsUnavailableError(blocked)
+
+  // 沒指定就跟著素材走 —— 寫死 30fps 會讓 24/25fps 的素材出現 pulldown judder
+  const fpsChoice = chooseOutputFps(probes)
+  const fps = opts.fps ?? fpsChoice.fps
+  const frameMs = 1000 / fps
+  const frameCount = Math.max(1, Math.round(range.durationMs / frameMs))
+
+  // 每支素材要在哪些輸出格出現、對應到自己的第幾秒。
+  // 先算好整份清單,才能餵給 canvasesAtTimestamps() 走循序解碼的快路。
+  const schedules = planFrameSchedules(state, map, range.startMs, frameMs, frameCount)
+  const sources: Partial<Record<ClipId, FrameSource>> = {}
+
+  // 實際取到的來源影格統計。
+  //
+  // 前面幾輪都是靠推理找卡頓的原因,但合成素材重現不出來,推理就沒有著力點。
+  // 這裡改成在真正的匯出過程中記錄每一格拿到的來源時間戳 ——
+  // 重複(同一格用了兩次)與跳格(中間漏掉)是卡頓在資料上的樣子,直接數出來。
+  const stats: Record<ClipId, FrameStats> = {
+    a: newStats(),
+    b: newStats(),
+  }
+  const sourceFrameSec: Partial<Record<ClipId, number>> = {}
+  for (const p of probes) {
+    if (p.fps) sourceFrameSec[p.id] = 1 / p.fps
+  }
 
   const output = new Output({
     format: outputFormatFor(caps.choice.container),
@@ -142,6 +174,7 @@ export async function exportWithWebCodecs(
     // 每支素材各自的「下一個要用的排程索引」
     const cursor: Record<ClipId, number> = { a: 0, b: 0 }
     const current: Record<ClipId, CanvasImageSource | null> = { a: null, b: null }
+    const lastTs: Partial<Record<ClipId, number>> = {}
 
     for (let i = 0; i < frameCount; i++) {
       if (signal?.aborted) throw new Error('已取消')
@@ -153,7 +186,13 @@ export async function exportWithWebCodecs(
         if (!src) continue
         if (schedule.frameIndices[cursor[id]] === i) {
           const wrapped = await src.next()
-          current[id] = wrapped?.canvas ?? current[id]
+          if (wrapped) {
+            recordStep(stats[id], wrapped.timestamp, lastTs[id], sourceFrameSec[id])
+            lastTs[id] = wrapped.timestamp
+            current[id] = wrapped.canvas
+          } else {
+            stats[id].missing++
+          }
           cursor[id]++
         }
         // 已經超出這支素材的範圍就不要再畫上一張殘影
@@ -186,7 +225,76 @@ export async function exportWithWebCodecs(
     elapsedMs: Math.round(performance.now() - started),
     frames: frameCount,
     choice: caps.choice,
+    fps,
+    judder:
+      [
+        opts.fps ? null : fpsChoice.judder,
+        summariseTiming(probes, fps),
+        summariseFrameStats(stats),
+      ]
+        .filter(Boolean)
+        .join(' ') || null,
+    stats,
   }
+}
+
+export interface FrameStats {
+  /** 實際從解碼器取到的影格數 */
+  pulled: number
+  /** 同一個來源影格被連續用了不只一次 —— 畫面停住 */
+  duplicates: number
+  /** 來源影格被跳過沒用到 —— 畫面跳一下 */
+  skipped: number
+  /** 解碼器沒給影格 */
+  missing: number
+}
+
+const newStats = (): FrameStats => ({
+  pulled: 0,
+  duplicates: 0,
+  skipped: 0,
+  missing: 0,
+})
+
+/**
+ * 記錄這一格相對於上一格前進了幾個來源影格。
+ *
+ * 1 = 正常。0 = 重複(畫面停住)。>1 = 跳格。
+ * 卡頓在資料上就是這兩種值散佈在整段影片裡。
+ */
+function recordStep(
+  s: FrameStats,
+  timestamp: number,
+  last: number | undefined,
+  frameSec: number | undefined,
+): void {
+  s.pulled++
+  if (last === undefined || !frameSec) return
+  // 四捨五入到最近的整數格,避免浮點誤差被誤判成重複
+  const step = Math.round((timestamp - last) / frameSec)
+  if (step <= 0) s.duplicates++
+  else if (step > 1) s.skipped += step - 1
+}
+
+/** 把統計整理成一句話。沒有異常時回傳 null。 */
+export function summariseFrameStats(stats: Record<ClipId, FrameStats>): string | null {
+  const bad = (['a', 'b'] as ClipId[]).filter(
+    (id) => stats[id].duplicates > 0 || stats[id].skipped > 0 || stats[id].missing > 0,
+  )
+  if (bad.length === 0) return null
+
+  return (
+    bad
+      .map((id) => {
+        const s = stats[id]
+        const pct = s.pulled > 0 ? Math.round(((s.duplicates + s.skipped) / s.pulled) * 100) : 0
+        return (
+          `影片 ${id.toUpperCase()}:${s.pulled} 格中重複 ${s.duplicates}、` +
+          `跳格 ${s.skipped}${s.missing > 0 ? `、缺格 ${s.missing}` : ''}(${pct}%)`
+        )
+      })
+      .join(';') + '。這就是畫面頓的地方。'
+  )
 }
 
 interface FrameSchedule {

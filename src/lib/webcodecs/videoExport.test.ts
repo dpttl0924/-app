@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { planFrameSchedules } from './videoExport'
+import { planFrameSchedules, summariseFrameStats, type FrameStats } from './videoExport'
 import { NO_COUNT_IN, type TimelineMap } from '../timeline'
 import type { Clip, ClipId } from '../types'
 
@@ -94,5 +94,36 @@ describe('影格排程', () => {
     const s = planFrameSchedules(state({}), NO_COUNT_IN, 0, FRAME_MS, 90)
     expect(s.a.timestamps).toHaveLength(0)
     expect(s.b.timestamps).toHaveLength(0)
+  })
+})
+
+const stats = (over: Partial<FrameStats> = {}): FrameStats => ({
+  pulled: 100,
+  duplicates: 0,
+  skipped: 0,
+  missing: 0,
+  ...over,
+})
+
+describe('影格取用統計', () => {
+  it('一格對一格時不回報異常', () => {
+    expect(summariseFrameStats({ a: stats(), b: stats() })).toBeNull()
+  })
+
+  it('指出是哪一支重複或跳格,以及佔多少比例', () => {
+    const msg = summariseFrameStats({
+      a: stats(),
+      b: stats({ duplicates: 12, skipped: 8 }),
+    })
+    expect(msg).toContain('影片 B')
+    expect(msg).toContain('重複 12')
+    expect(msg).toContain('跳格 8')
+    expect(msg).toContain('20%')
+    expect(msg).not.toContain('影片 A')
+  })
+
+  it('缺格只在真的發生時才提', () => {
+    expect(summariseFrameStats({ a: stats({ missing: 3 }), b: stats() })).toContain('缺格 3')
+    expect(summariseFrameStats({ a: stats({ duplicates: 1 }), b: stats() })).not.toContain('缺格')
   })
 })
