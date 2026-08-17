@@ -79,7 +79,9 @@ export async function renderMixedAudio(
     source.connect(gain).connect(ctx.destination)
     source.start(whenSec, seekSec)
     mixed++
-    onProgress?.(0.05 + 0.35 * mixed)
+    // 兩支素材各佔解碼階段的一半 —— 之前是 0.05 + 0.35 × mixed,
+    // 第二支就會跳到 0.75,接著又被後面的 0.5 拉回去,進度條會倒退
+    onProgress?.(0.05 + 0.45 * (mixed / ids.length))
   }
 
   // 節拍器:輸出的 0 秒就是預備拍的開頭,click 的時間可以直接用

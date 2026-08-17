@@ -58,7 +58,7 @@ export function CodecPanel() {
             <span className="font-mono text-emerald-300">
               {caps.choice.container.toUpperCase()} / {caps.choice.video.toUpperCase()}
               {' + '}
-              {caps.choice.audio.toUpperCase()}
+              {caps.choice.audio?.toUpperCase() ?? '無聲'}
             </span>
           </p>
           <p

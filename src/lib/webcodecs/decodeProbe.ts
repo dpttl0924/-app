@@ -209,91 +209,31 @@ function describeUndecodable(codec: string | null): string {
   return `${codec.toUpperCase()} —— 這個瀏覽器的 WebCodecs 解不開`
 }
 
-export const DEFAULT_FPS = 30
-/** 再高就只是換來更大的檔案與更久的編碼,對眼睛沒有幫助 */
-const MAX_FPS = 60
-
-export interface FpsChoice {
-  fps: number
-  /** 有素材的格率無法整除輸出格率時,說明是哪一支、會有什麼後果 */
-  judder: string | null
-}
-
 /**
- * 依素材的實際格率決定輸出格率。
+ * 素材格率的說明。純粹是資訊,沒什麼好講的時候回傳 null。
  *
- * 原本寫死 30fps。素材是 24 或 25fps 的話,30 除不盡,取樣就會變成
- * 「這格重複、下一格跳過」的 pulldown 圖樣 —— 畫面看起來一頓一頓的。
- * 兩支素材格率相同時直接沿用,取樣點與素材影格一一對應,完全沒有重複或跳格。
+ * 這裡刻意**不再**警告「格率除不盡會頓」。舊版要先選一個固定的輸出格率,
+ * 所以格率不同就一定有一支要被重新取樣,只能事先道歉;
+ * 現在合成時間軸是由兩支素材的影格時刻決定的(見 composite.ts),
+ * 格率不同、甚至是 VFR,都是一格對一格,沒有東西要警告。
  */
-export function chooseOutputFps(probes: DecodeProbe[]): FpsChoice {
-  const rates = probes.map(effectiveRate).filter((f): f is number => f != null && f > 0)
-  if (rates.length === 0) return { fps: DEFAULT_FPS, judder: null }
+export function summariseRates(probes: DecodeProbe[]): string | null {
+  const measured = probes.filter((p) => p.fps !== null)
+  if (measured.length === 0) return null
 
-  const max = Math.max(...rates)
-  // 全部一樣:用素材自己的格率,一格對一格
-  if (rates.every((r) => Math.abs(r - max) < 0.01)) {
-    return { fps: max, judder: null }
-  }
-
-  // 格率不同:找一個大家都除得盡的格率,太高就放棄
-  const common = lcm(rates.map((r) => Math.round(r)))
-  if (common <= MAX_FPS) return { fps: common, judder: null }
-
-  const stuck = probes.filter(
-    (p) => p.fps != null && Math.abs(max % p.fps) > 0.01,
+  const parts = measured.map(
+    (p) =>
+      `影片 ${p.id.toUpperCase()} ${p.fps}fps${p.timing?.variable ? '(可變格率)' : ''}`,
   )
-  return {
-    fps: max,
-    judder:
-      stuck.length > 0
-        ? `影片 ${stuck.map((p) => p.id.toUpperCase()).join('、')} 是 ${stuck[0].fps}fps,` +
-          `與輸出的 ${max}fps 除不盡,畫面會有輕微頓挫。` +
-          `兩支素材格率一致的話就不會有這個問題。`
-        : null,
-  }
-}
-
-/**
- * 這支素材實際需要多高的輸出格率才接得住。
- *
- * CFR 的話就是它的格率。VFR 的話**平均值不夠用** —— 平均 29.97 的素材裡
- * 可能夾著間隔只有 16.7ms 的影格(瞬時 60fps),用 30fps 輸出會把它們吃掉,
- * 那就是頓的來源。改看最快的瞬時速率,每一格才都有自己的位置。
- */
-function effectiveRate(p: DecodeProbe): number | null {
-  if (p.timing?.variable && p.timing.fastDeltaMs > 0) {
-    return Math.min(MAX_FPS, snapToCommonRate(1000 / p.timing.fastDeltaMs) ?? DEFAULT_FPS)
-  }
-  return p.fps
-}
-
-const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
-const lcm = (xs: number[]) => xs.reduce((a, b) => (a * b) / gcd(a, b), 1)
-
-/**
- * VFR 素材的說明。
- *
- * 這個要單獨講,因為症狀跟格率不匹配一模一樣(畫面頓),
- * 但原因和解法完全不同 —— 格率是「兩支不一樣」,VFR 是「這一支自己就不規則」。
- */
-export function summariseTiming(probes: DecodeProbe[], outputFps: number): string | null {
-  const vfr = probes.filter((p) => p.timing?.variable)
-  if (vfr.length === 0) return null
-
-  const ids = vfr.map((p) => p.id.toUpperCase()).join('、')
-  const worst = vfr[0].timing!
-  const needed = 1000 / worst.fastDeltaMs
-  // 輸出格率接不接得住最快的那些影格
-  const covered = outputFps >= needed - 0.5
+  const mixed =
+    measured.some((p) => p.timing?.variable) ||
+    new Set(measured.map((p) => p.fps)).size > 1
 
   return (
-    `影片 ${ids} 是可變格率(VFR):影格間隔在 ${worst.minDeltaMs}–${worst.maxDeltaMs}ms 之間跳動` +
-    `(${Math.round(worst.irregularRatio * 100)}% 不規則)。手機錄影很常是這樣。` +
-    (covered
-      ? `輸出格率已經提高到 ${outputFps}fps 來接住最密的影格。`
-      : `輸出格率 ${outputFps}fps 接不住最密的影格(需要 ${Math.round(needed)}fps),` +
-        `畫面仍會有輕微頓挫 —— 再往上提檔案會大到不合理。`)
+    parts.join('、') +
+    (mixed
+      ? '。輸出走可變格率,兩支都是一格對一格,不會有重複或跳格。'
+      : '。')
   )
 }
 

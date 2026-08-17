@@ -1,6 +1,6 @@
 import {
   Mp4OutputFormat,
-  MkvOutputFormat,
+  WebMOutputFormat,
   canEncodeVideo,
   canEncodeAudio,
   type AudioCodec,
@@ -22,7 +22,8 @@ export type OutputContainer = 'mp4' | 'webm'
 export interface CodecChoice {
   container: OutputContainer
   video: VideoCodec
-  audio: AudioCodec
+  /** null = 這台裝置沒有裝得進這個容器的音訊編碼器,輸出無聲 */
+  audio: AudioCodec | null
   /** 副檔名與 MIME,給下載用 */
   extension: string
   mimeType: string
@@ -109,19 +110,29 @@ function pickChoice(
   // 視訊編碼決定容器 —— 裝不進 MP4 的就只能用 Matroska/WebM
   const container: OutputContainer = MP4_VIDEO.includes(bestVideo) ? 'mp4' : 'webm'
 
-  // 音訊也要塞得進同一個容器,否則寧可不要音軌
+  // 音訊也要塞得進同一個容器,塞不進就不要音軌。
+  //
+  // 這裡不能拿一個「預設值」墊檔:編不出來的 codec 要等到 addAudioTrack()
+  // 才炸,那時候使用者已經等了一整段編碼,而且只會看到一句跟音訊無關的錯誤。
+  // 寧可安靜地輸出無聲 —— 畫面通常才是重點,與 MediaRecorder 那條路一致。
   const audioFits =
-    bestAudio && (container === 'webm' || MP4_AUDIO.includes(bestAudio))
+    bestAudio !== null && (container === 'webm' || MP4_AUDIO.includes(bestAudio))
 
   return {
     container,
     video: bestVideo,
-    audio: (audioFits ? bestAudio : 'opus') as AudioCodec,
+    audio: audioFits ? bestAudio : null,
     extension: container === 'mp4' ? 'mp4' : 'webm',
     mimeType: container === 'mp4' ? 'video/mp4' : 'video/webm',
   }
 }
 
+/**
+ * WebM 用 `WebMOutputFormat` 而不是 `MkvOutputFormat`。
+ *
+ * WebM 是 Matroska 的子集,兩者共用容器結構,所以 Mkv 寫出來的東西「看起來」也能播,
+ * 但檔案被標成 .webm / video/webm 之後,嚴格檢查 DocType 的播放器會直接拒絕。
+ */
 export function outputFormatFor(container: OutputContainer) {
-  return container === 'mp4' ? new Mp4OutputFormat() : new MkvOutputFormat()
+  return container === 'mp4' ? new Mp4OutputFormat() : new WebMOutputFormat()
 }
