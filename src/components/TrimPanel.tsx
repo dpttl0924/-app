@@ -1,9 +1,6 @@
-import { contentDurationMs, useProject } from '../store/useProject'
 import { formatSeconds, formatTime } from '../lib/format'
+import { useTrim } from '../hooks/useTrim'
 import { Button, Panel } from './ui'
-
-/** 刪完至少要留這麼長,跟 store 的 MIN_RANGE_MS 一致 */
-const MIN_KEEP_MS = 200
 
 /**
  * 剪輯:在播放頭切一刀,然後刪掉不要的那半。
@@ -12,45 +9,18 @@ const MIN_KEEP_MS = 200
  * 那是編輯器的說法,使用者得先在腦中把要保留的範圍想清楚,才知道該按哪一個。
  * 「切一刀,刪掉不要的那邊」不用想,看著畫面做就好。
  *
- * 兩者的底層資料完全一樣(單一個保留區間),換掉的只有互動。
+ * 這是手機版的樣子。桌機把同一組操作攤平放在播放列上(TrimBar),
+ * 規則兩邊共用 useTrim(),差別只有版面。
  */
 export function TrimPanel() {
-  const durationMs = useProject((s) => s.durationMs)
-  const rangeInMs = useProject((s) => s.rangeInMs)
-  const rangeOutMs = useProject((s) => s.rangeOutMs)
-  const splitAtMs = useProject((s) => s.splitAtMs)
-  const countIn = useProject((s) => s.countIn)
-  const tempo = useProject((s) => s.tempo)
-  const previousRange = useProject((s) => s.previousRange)
-  const splitAtPlayhead = useProject((s) => s.splitAtPlayhead)
-  const cancelSplit = useProject((s) => s.cancelSplit)
-  const deleteSegment = useProject((s) => s.deleteSegment)
-  const undoTrim = useProject((s) => s.undoTrim)
-  const clearRange = useProject((s) => s.clearRange)
-  const setPlaying = useProject((s) => s.setPlaying)
-
-  // 全部用內容時間顯示。剪輯談的是「留下哪一段素材」,
-  // 預備拍佔多長是另一件事,歸預備拍面板管。
-  const contentMs = contentDurationMs({ durationMs, countIn, tempo })
-  const range = {
-    startMs: rangeInMs,
-    endMs: rangeOutMs ?? contentMs,
-    durationMs: (rangeOutMs ?? contentMs) - rangeInMs,
-  }
-  const trimmed = range.startMs > 0 || range.endMs < contentMs
-  const empty = durationMs <= 0
-
-  const onSplit = () => {
-    setPlaying(false)
-    splitAtPlayhead()
-  }
+  const trim = useTrim()
 
   return (
     <Panel
       title="剪輯"
       right={
-        previousRange ? (
-          <Button variant="ghost" onClick={undoTrim}>
+        trim.canUndo ? (
+          <Button variant="ghost" onClick={trim.undoTrim}>
             ↩ 復原
           </Button>
         ) : null
@@ -59,23 +29,23 @@ export function TrimPanel() {
       <div className="flex items-baseline justify-between text-[11px]">
         <span className="text-white/50">保留</span>
         <span className="font-mono tabular-nums text-emerald-300">
-          {formatTime(range.startMs)} – {formatTime(range.endMs)}
+          {formatTime(trim.range.startMs)} – {formatTime(trim.range.endMs)}
         </span>
         <span className="text-white/40">
-          共 {formatSeconds(range.durationMs)}
-          {trimmed && (
-            <span className="text-white/25"> / {formatSeconds(contentMs)}</span>
+          共 {formatSeconds(trim.range.durationMs)}
+          {trim.trimmed && (
+            <span className="text-white/25"> / {formatSeconds(trim.contentMs)}</span>
           )}
         </span>
       </div>
 
-      {splitAtMs === null ? (
+      {trim.splitAtMs === null ? (
         <>
           <Button
             variant="primary"
             className="w-full py-2"
-            disabled={empty}
-            onClick={onSplit}
+            disabled={trim.empty}
+            onClick={trim.split}
           >
             ✂ 在播放頭切開
           </Button>
@@ -87,40 +57,40 @@ export function TrimPanel() {
       ) : (
         <div className="space-y-2 rounded-md bg-amber-400/10 p-2 ring-1 ring-amber-400/30">
           <p className="text-[11px] text-amber-200/90">
-            在 <span className="font-mono">{formatTime(splitAtMs)}</span>{' '}
+            在 <span className="font-mono">{formatTime(trim.splitAtMs)}</span>{' '}
             切開了。要刪掉哪一段?
           </p>
           {/* 按鈕的左右位置要對應時間軸上的左右,不然每次都要停下來想一下 */}
           <div className="grid grid-cols-2 gap-1">
             <Button
-              disabled={range.endMs - splitAtMs < MIN_KEEP_MS}
-              onClick={() => deleteSegment('left')}
+              disabled={!trim.canDeleteLeft}
+              onClick={() => trim.deleteSegment('left')}
               title="保留右段"
             >
               ← 刪掉左邊
               <span className="ml-1 text-[10px] opacity-60">
-                {formatSeconds(splitAtMs - range.startMs)}
+                {formatSeconds(trim.splitAtMs - trim.range.startMs)}
               </span>
             </Button>
             <Button
-              disabled={splitAtMs - range.startMs < MIN_KEEP_MS}
-              onClick={() => deleteSegment('right')}
+              disabled={!trim.canDeleteRight}
+              onClick={() => trim.deleteSegment('right')}
               title="保留左段"
             >
               刪掉右邊 →
               <span className="ml-1 text-[10px] opacity-60">
-                {formatSeconds(range.endMs - splitAtMs)}
+                {formatSeconds(trim.range.endMs - trim.splitAtMs)}
               </span>
             </Button>
           </div>
-          <Button variant="ghost" className="w-full" onClick={cancelSplit}>
+          <Button variant="ghost" className="w-full" onClick={trim.cancelSplit}>
             取消
           </Button>
         </div>
       )}
 
-      {trimmed && (
-        <Button variant="ghost" className="w-full" onClick={clearRange}>
+      {trim.trimmed && (
+        <Button variant="ghost" className="w-full" onClick={trim.clearRange}>
           還原成完整長度
         </Button>
       )}

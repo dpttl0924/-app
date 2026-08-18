@@ -90,7 +90,8 @@ export default function App() {
         <main className="flex min-h-0 flex-1 gap-3 p-3">
           <div className="flex min-w-0 flex-1 flex-col gap-3">
             <Stage refs={refs} />
-            <Transport />
+            {/* 剪輯就在時間軸正上方 —— 切點看著時間軸決定,按鈕不該在半個畫面外 */}
+            <Transport inlineTrim />
             <Timeline />
           </div>
           <aside className="w-85 shrink-0 space-y-3 overflow-y-auto">
@@ -99,7 +100,6 @@ export default function App() {
             <ClipPanel id="b" />
             <AlignPanel />
             <CountInPanel />
-            <TrimPanel />
             <AnnotationPanel />
             <CodecPanel />
             <ExportPanel refs={refs} />

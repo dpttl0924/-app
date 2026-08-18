@@ -133,21 +133,45 @@ export function usePlaybackEngine(refs: VideoRefs) {
 }
 
 /**
- * 選一支影片當時鐘主控:優先 A,A 不在範圍內就用 B。
- * 兩支都不在範圍內回傳 null(例如 A 播完、B 還沒開始的空檔)。
+ * 選一支影片當時鐘主控:**解碼最吃力的那一支**。兩支都不在範圍內回傳 null
+ * (例如 A 播完、B 還沒開始的空檔)。
+ *
+ * 主控那支自己播自己的,永遠不會被 seek 也不會被改速度;從屬那支負責追。
+ * 所以「誰當主控」等於在決定「把校正的代價丟給誰」——
+ * 一定要丟給撐得住的那一支。
+ *
+ * 舊版無條件優先 A,結果剛好相反:1280×720 配 1920×1080 時,
+ * 不管誰重誰輕,被 seek 的永遠是 B。而手機同時解兩支影片本來就吃緊,
+ * 對著已經解不動的 1080p 反覆 seek(每次都是清空解碼器重來)只會更慢,
+ * 慢了誤差更大、於是再 seek —— 那支就一直在頓。
+ * 反過來讓 1080p 當主控,它就再也不會被打斷,由便宜的 720p 去追。
+ *
+ * 代價:預設 B 是靜音的,所以這樣通常會讓有聲音的 A 變成從屬,
+ * 修正幅度受 AUDIBLE_MAX_TRIM 限制(±3%),追得比較慢。
+ * 用畫面的頓換聲音的微幅速度變化是划算的 —— 頓看得出來,3% 聽不出來。
+ *
+ * 像素數一樣時維持原本的順序(優先 A),常見情況的行為完全不變。
  */
-function pickMaster(
+export function pickMaster(
   refs: VideoRefs,
   clips: Record<ClipId, Clip | null>,
   projectMs: number,
 ): ClipId | null {
-  for (const id of ['a', 'b'] as ClipId[]) {
+  const eligible = (['a', 'b'] as ClipId[]).filter((id) => {
     const el = refs[id].current
     const clip = clips[id]
-    if (!el || !clip || el.readyState < 2) continue
-    if (resolveClipTime(clip, projectMs).inRange) return id
-  }
-  return null
+    return !!el && !!clip && el.readyState >= 2 && resolveClipTime(clip, projectMs).inRange
+  })
+  if (eligible.length === 0) return null
+
+  return eligible.reduce((best, id) =>
+    decodeCost(clips[id]) > decodeCost(clips[best]) ? id : best,
+  )
+}
+
+/** 解碼負擔的代理指標。量不到尺寸時當成 0,寧可不要搶主控。 */
+function decodeCost(clip: Clip | null): number {
+  return clip ? (clip.width ?? 0) * (clip.height ?? 0) : 0
 }
 
 /** 只在真的變了才寫。每幀重設 playbackRate 會打擾媒體管線。 */
