@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
-import { cssTransform, slotRect } from '../lib/layout'
+import { cropFrame, cssTransform, slotRect } from '../lib/layout'
+import { CropOverlay } from './CropOverlay'
 import { zoomAround } from '../lib/zoom'
 import { drawAudioPlaceholder } from '../lib/audioPreview'
 import { CLIP_COLORS } from '../lib/clipColors'
 import {
   ASPECT_SIZES,
+  DEFAULT_TRANSFORM,
   MAX_CLIP_SCALE,
   MIN_CLIP_SCALE,
   isAudioOnly,
@@ -56,6 +58,8 @@ export function Stage({ refs }: StageProps) {
   const currentMs = useProject((s) => s.currentMs)
   const selected = useProject((s) => s.selectedAnnotation)
   const adjustTarget = useProject((s) => s.adjustTarget)
+  const cropTarget = useProject((s) => s.cropTarget)
+  const setCrop = useProject((s) => s.setCrop)
   const updateAnnotation = useProject((s) => s.updateAnnotation)
   const selectAnnotation = useProject((s) => s.selectAnnotation)
   const setTransform = useProject((s) => s.setTransform)
@@ -222,19 +226,26 @@ export function Stage({ refs }: StageProps) {
           containerType: 'inline-size',
           // 調整模式下吃掉觸控手勢,否則拖曳影片會連帶捲動頁面。
           // 沒在調整時維持 auto,讓使用者可以正常滑動頁面。
-          touchAction: adjustTarget ? 'none' : 'auto',
+          touchAction: adjustTarget || cropTarget ? 'none' : 'auto',
         }}
         onPointerDown={onStagePointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}
         onPointerCancel={endPointer}
       >
-        <ClipLayer clip={clips.a} videoRef={refs.a} mode={mode} size={size} />
+        <ClipLayer
+          clip={clips.a}
+          videoRef={refs.a}
+          mode={mode}
+          size={size}
+          cropping={cropTarget === 'a'}
+        />
         <ClipLayer
           clip={clips.b}
           videoRef={refs.b}
           mode={mode}
           size={size}
+          cropping={cropTarget === 'b'}
           style={{
             opacity: mode === 'overlay' ? opacity : 1,
             mixBlendMode:
@@ -264,6 +275,15 @@ export function Stage({ refs }: StageProps) {
             slot={slotRect(mode, adjustTarget, size)}
             size={size}
             label={adjustTarget.toUpperCase()}
+          />
+        )}
+
+        {cropTarget && clips[cropTarget] && !isAudioOnly(clips[cropTarget]!) && (
+          <CropOverlay
+            clip={clips[cropTarget]!}
+            slot={slotRect(mode, cropTarget, size)}
+            size={size}
+            onChange={(crop) => setCrop(cropTarget, crop)}
           />
         )}
 
@@ -332,12 +352,26 @@ interface ClipLayerProps {
   mode: CompareMode
   size: ProjectSize
   style?: CSSProperties
+  /** 正在拉這一支的裁切框:暫時顯示完整原片,好讓使用者看得到自己在框什麼 */
+  cropping?: boolean
 }
 
-function ClipLayer({ clip, videoRef, mode, size, style }: ClipLayerProps) {
+function ClipLayer({ clip, videoRef, mode, size, style, cropping }: ClipLayerProps) {
   if (!clip) return null
   const slot = slotRect(mode, clip.id, size)
   const audioOnly = isAudioOnly(clip)
+
+  // 裁切期間拿掉裁切與縮放位移,但**保留鏡像** ——
+  // 進入裁切模式時畫面突然左右翻過來會很錯亂,而 CropOverlay 本來就會換算鏡像。
+  const shown: Clip = cropping
+    ? {
+        ...clip,
+        crop: null,
+        transform: { ...DEFAULT_TRANSFORM, mirrored: clip.transform.mirrored },
+      }
+    : clip
+
+  const frame = cropFrame(shown, slot)
 
   return (
     <div
@@ -351,17 +385,53 @@ function ClipLayer({ clip, videoRef, mode, size, style }: ClipLayerProps) {
       }}
     >
       {/*
-        video 元素一定要留著,播放引擎靠它控制音訊播放 —— 純音檔也是靠這個元素播的,
-        只是畫面沒有東西可以顯示,所以視覺上隱藏,改疊一層佔位畫面上去。
+        這一層一定要是整格大小:cssTransform 的位移是「格寬的百分之幾」,
+        套在比較小的元素上百分比的基準就變了,位移會跟著縮水。
+        縮放也以這一層的中心為原點,剛好等於格子中心,與 drawClip() 一致。
       */}
-      <video
-        ref={videoRef}
-        src={clip.url}
-        playsInline
-        preload="auto"
-        className={`pointer-events-none h-full w-full ${audioOnly ? 'invisible' : ''}`}
-        style={{ objectFit: 'contain', transform: cssTransform(clip, slot) }}
-      />
+      <div
+        className="absolute inset-0"
+        style={{ transform: cssTransform(shown, slot) }}
+      >
+        {/*
+          裁切視窗:大小就是「裁切後的內容 contain 進格子」的結果,置中。
+          裡面那張影片放大到 1/crop 倍再往左上推,露出來的就剛好是要留的那一塊。
+          沒裁切時視窗等於 contain 的結果、影片不放大,退化成原本的 object-fit: contain。
+        */}
+        <div
+          className="absolute overflow-hidden"
+          style={{
+            left: `${((slot.w - frame.view.w) / 2 / slot.w) * 100}%`,
+            top: `${((slot.h - frame.view.h) / 2 / slot.h) * 100}%`,
+            width: `${(frame.view.w / slot.w) * 100}%`,
+            height: `${(frame.view.h / slot.h) * 100}%`,
+          }}
+        >
+          {/*
+            video 元素一定要留著,播放引擎靠它控制音訊播放 —— 純音檔也是靠這個元素播的,
+            只是畫面沒有東西可以顯示,所以視覺上隱藏,改疊一層佔位畫面上去。
+          */}
+          <video
+            ref={videoRef}
+            src={clip.url}
+            playsInline
+            preload="auto"
+            className={`pointer-events-none absolute ${audioOnly ? 'invisible' : ''}`}
+            style={{
+              left: `${(frame.offset.x / frame.view.w) * 100}%`,
+              top: `${(frame.offset.y / frame.view.h) * 100}%`,
+              width: `${(frame.full.w / frame.view.w) * 100}%`,
+              height: `${(frame.full.h / frame.view.h) * 100}%`,
+              // 尺寸已經算成正確的長寬比了,fill 才不會再套一次自己的 contain
+              objectFit: 'fill',
+              // Tailwind preflight 有 `img, video { max-width: 100% }`。
+              // 裁切時這裡的寬度會超過 100%(放大到 1/crop 倍),不解掉的話寬度會被
+              // 夾回一個視窗寬、高度卻照放 —— 預覽跟匯出就會對不起來,而且只有橫向錯。
+              maxWidth: 'none',
+            }}
+          />
+        </div>
+      </div>
       {audioOnly && <AudioPlaceholder clip={clip} slot={slot} />}
     </div>
   )

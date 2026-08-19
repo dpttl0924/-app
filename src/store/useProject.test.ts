@@ -23,6 +23,7 @@ function makeClip(id: ClipId, patch: Partial<Clip> = {}): Clip {
     fps: 30,
     offsetMs: 0,
     transform: { ...DEFAULT_TRANSFORM },
+    crop: null,
     volume: id === 'a' ? 1 : 0,
     envelope: null,
     onset: null,

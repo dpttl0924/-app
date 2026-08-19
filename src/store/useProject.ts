@@ -17,6 +17,7 @@ import {
   type ClipId,
   type ClipTransform,
   type CompareMode,
+  type CropRect,
 } from '../lib/types'
 
 export type AlignStatus = 'idle' | 'running' | 'done' | 'warn' | 'error'
@@ -46,6 +47,8 @@ interface ProjectState {
   selectedAnnotation: string | null
   /** 目前用手勢直接調整的是哪一段影片。null = 手勢關閉,讓頁面正常捲動。 */
   adjustTarget: ClipId | null
+  /** 正在拉裁切框的是哪一支。與 adjustTarget 互斥。 */
+  cropTarget: ClipId | null
 
   currentMs: number
   durationMs: number
@@ -106,6 +109,9 @@ interface ProjectState {
   setOpacity: (v: number) => void
   setBlend: (v: BlendMode) => void
   setWipe: (v: number) => void
+  setCropTarget: (id: ClipId | null) => void
+  /** null = 還原成完整畫面 */
+  setCrop: (id: ClipId, crop: CropRect | null) => void
   setTransform: (id: ClipId, patch: Partial<ClipTransform>) => void
   resetTransform: (id: ClipId) => void
   toggleMirror: (id: ClipId) => void
@@ -304,6 +310,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
   annotations: [],
   selectedAnnotation: null,
   adjustTarget: null,
+  cropTarget: null,
 
   currentMs: 0,
   durationMs: 0,
@@ -341,6 +348,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
         fps: 30,
         offsetMs: 0,
         transform: { ...DEFAULT_TRANSFORM },
+        crop: null,
         volume: id === 'a' ? 1 : 0,
         envelope: null,
         onset: null,
@@ -391,13 +399,24 @@ export const useProject = create<ProjectState>()((set, get) => ({
         playing: false,
         align: IDLE_ALIGN,
         adjustTarget: s.adjustTarget === id ? null : s.adjustTarget,
+        cropTarget: s.cropTarget === id ? null : s.cropTarget,
       }
     })
   },
 
   setAspect: (aspect) => set({ aspect }),
   setMode: (mode) => set({ mode }),
-  setAdjustTarget: (adjustTarget) => set({ adjustTarget }),
+  // 兩個模式都要吃舞台上的指標事件,同時開著的話會互相搶,所以進一個就關掉另一個
+  setAdjustTarget: (adjustTarget) => set({ adjustTarget, cropTarget: null }),
+  setCropTarget: (cropTarget) => set({ cropTarget, adjustTarget: null }),
+
+  setCrop: (id, crop) =>
+    set((s) => {
+      const clip = s.clips[id]
+      if (!clip) return s
+      return { clips: { ...s.clips, [id]: { ...clip, crop } } }
+    }),
+
   setOpacity: (opacity) => set({ opacity }),
   setBlend: (blend) => set({ blend }),
   setWipe: (wipe) => set({ wipe }),

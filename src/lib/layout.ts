@@ -1,4 +1,5 @@
 import { ASPECT_SIZES, type AspectRatio } from './types'
+import { cropOrFull } from './crop'
 import type {
   Clip,
   ClipId,
@@ -41,11 +42,40 @@ export function slotRect(mode: CompareMode, id: ClipId, size: ProjectSize): Rect
   }
 }
 
-/** 影片以 contain 方式塞進格子後的實際尺寸(未套用 transform) */
+/**
+ * 裁切之後實際會被用到的來源尺寸。沒裁切就是原片尺寸。
+ *
+ * 整條路徑都從這裡取「這支影片有多大」,裁切才會自動變成
+ * 「留下的那塊放大填滿格子」—— contain 的對象換成裁切後的區域,
+ * 縮放倍率自然就跟著變大,不需要另外算一組放大係數。
+ */
+export function croppedSize(clip: Clip): { w: number; h: number } {
+  const c = cropOrFull(clip.crop)
+  return { w: clip.width * c.w, h: clip.height * c.h }
+}
+
+/** 影片(裁切後)以 contain 方式塞進格子後的實際尺寸(未套用 transform) */
 export function containSize(clip: Clip, slot: Rect): { w: number; h: number } {
-  if (!clip.width || !clip.height) return { w: slot.w, h: slot.h }
-  const s = Math.min(slot.w / clip.width, slot.h / clip.height)
-  return { w: clip.width * s, h: clip.height * s }
+  const src = croppedSize(clip)
+  if (!src.w || !src.h) return { w: slot.w, h: slot.h }
+  const s = Math.min(slot.w / src.w, slot.h / src.h)
+  return { w: src.w * s, h: src.h * s }
+}
+
+/**
+ * 預覽用的裁切幾何(專案座標系)。
+ *
+ * CSS 沒有 drawImage 的九參數版本,所以改成三層:
+ * 外層開一個「裁切後大小」的視窗、裡面放一張放大到 1/crop 倍的完整影片、
+ * 再往左上推到對的位置。數字全部從這裡出,才跟 drawClip() 走同一份幾何。
+ *
+ * 沒裁切時 full === view、offset 是 0,退化成原本的 object-fit: contain。
+ */
+export function cropFrame(clip: Clip, slot: Rect) {
+  const view = containSize(clip, slot)
+  const c = cropOrFull(clip.crop)
+  const full = { w: view.w / c.w, h: view.h / c.h }
+  return { view, full, offset: { x: -c.x * full.w, y: -c.y * full.h } }
 }
 
 /**
@@ -165,6 +195,41 @@ export function drawClip(
   ctx.translate(slot.x + slot.w / 2 + t.offsetX, slot.y + slot.h / 2 + t.offsetY)
   // x 軸為負時,drawImage 就會以中心為軸左右翻轉 —— 與 CSS 的 scale(-s, s) 等價
   ctx.scale(scaleX(t), t.scale)
-  ctx.drawImage(source, -fit.w / 2, -fit.h / 2, fit.w, fit.h)
+
+  // 裁切是「只取來源的這一塊」,所以走九參數版本。
+  // 目的地矩形不變(仍是 contain 的結果),但 contain 的對象已經是裁切後的尺寸,
+  // 所以那一塊會自動被放大到填滿格子。
+  const src = sourceRect(clip, source)
+  if (src) {
+    ctx.drawImage(source, src.x, src.y, src.w, src.h, -fit.w / 2, -fit.h / 2, fit.w, fit.h)
+  } else {
+    ctx.drawImage(source, -fit.w / 2, -fit.h / 2, fit.w, fit.h)
+  }
   ctx.restore()
+}
+
+/**
+ * 裁切區在來源影像**自己的**像素座標裡是哪一塊。沒裁切回傳 null。
+ *
+ * 尺寸刻意從 source 現量,而不是用 clip.width/height:
+ * 預覽餵進來的是 <video>,匯出餵進來的是解碼出來的 canvas,兩者的內在尺寸
+ * 不保證一樣。crop 是 0..1 的比例,乘上各自的實際尺寸才會對上同一塊畫面。
+ */
+function sourceRect(clip: Clip, source: CanvasImageSource): Rect | null {
+  if (!clip.crop) return null
+  const s = intrinsicSize(source)
+  if (!s) return null
+  const c = clip.crop
+  return { x: c.x * s.w, y: c.y * s.h, w: c.w * s.w, h: c.h * s.h }
+}
+
+function intrinsicSize(source: CanvasImageSource): { w: number; h: number } | null {
+  if (typeof HTMLVideoElement !== 'undefined' && source instanceof HTMLVideoElement) {
+    return source.videoWidth > 0
+      ? { w: source.videoWidth, h: source.videoHeight }
+      : null
+  }
+  // canvas / OffscreenCanvas / ImageBitmap 都直接有數值的 width / height
+  const s = source as { width?: number; height?: number }
+  return s.width && s.height ? { w: s.width, h: s.height } : null
 }

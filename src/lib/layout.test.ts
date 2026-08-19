@@ -5,6 +5,8 @@ import {
   containSize,
   cssTransform,
   drawClip,
+  cropFrame,
+  croppedSize,
   projectDuration,
   resolveClipTime,
   slotRect,
@@ -25,6 +27,7 @@ function makeClip(patch: Partial<Clip> = {}): Clip {
     fps: 30,
     offsetMs: 0,
     transform: { ...DEFAULT_TRANSFORM },
+    crop: null,
     volume: 1,
     envelope: null,
     onset: null,
@@ -116,6 +119,7 @@ describe('cssTransform', () => {
     // 所以 offsetX/slot.w × slot.w 會等於 canvas 用的 offsetX
     const clip = makeClip({
       transform: { scale: 1.5, offsetX: 270, offsetY: -192, mirrored: false },
+  crop: null,
     })
     const slot = slotRect('sideBySide', 'a', ASPECT_SIZES['9:16']) // 540 x 1920
     expect(cssTransform(clip, slot)).toBe('translate(50%, -10%) scale(1.5, 1.5)')
@@ -322,5 +326,81 @@ describe('containSize', () => {
   it('還沒讀到影片尺寸時退回格子大小,不會產生 NaN', () => {
     const clip = makeClip({ width: 0, height: 0 })
     expect(containSize(clip, { x: 0, y: 0, w: 960, h: 540 })).toEqual({ w: 960, h: 540 })
+  })
+})
+
+describe('裁切幾何', () => {
+  const SLOT = { x: 0, y: 0, w: 1000, h: 1000 }
+
+  /** contain 是「乘以除法的結果」,1920 × (1000/1920) 會留下浮點殘渣 */
+  const expectSize = (got: { w: number; h: number }, w: number, h: number) => {
+    expect(got.w).toBeCloseTo(w, 9)
+    expect(got.h).toBeCloseTo(h, 9)
+  }
+
+  it('沒裁切時 containSize 跟以前一樣', () => {
+    const clip = makeClip({ width: 1920, height: 1080 })
+    expectSize(containSize(clip, SLOT), 1000, 562.5)
+  })
+
+  it('裁切之後 contain 的對象換成裁切區 —— 留下的那塊自動放大填滿', () => {
+    // 只留中間 50% × 50%,等於 960×540 的來源
+    const clip = makeClip({
+      width: 1920,
+      height: 1080,
+      crop: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 },
+    })
+    // 長寬比沒變,所以仍是寬度貼齊;但同樣的 1000px 現在只裝一半的內容 = 放大兩倍
+    expectSize(containSize(clip, SLOT), 1000, 562.5)
+    expectSize(croppedSize(clip), 960, 540)
+  })
+
+  it('裁成直的之後改成高度貼齊,不再有上下黑邊', () => {
+    // 橫式原片裁出一條直的:1920×1080 取中間 20% 寬 → 384×1080
+    const clip = makeClip({
+      width: 1920,
+      height: 1080,
+      crop: { x: 0.4, y: 0, w: 0.2, h: 1 },
+    })
+    const fit = containSize(clip, SLOT)
+    expect(fit.h).toBe(1000)
+    expect(fit.w).toBeCloseTo((384 / 1080) * 1000)
+  })
+
+  it('cropFrame:沒裁切時退化成 object-fit: contain', () => {
+    const clip = makeClip({ width: 1000, height: 1000 })
+    const f = cropFrame(clip, SLOT)
+    expect(f.view).toEqual(f.full)
+    expect(f.offset).toEqual({ x: -0, y: -0 })
+  })
+
+  it('cropFrame:放大倍率與位移對得上裁切區', () => {
+    const clip = makeClip({
+      width: 1000,
+      height: 1000,
+      crop: { x: 0.25, y: 0.5, w: 0.5, h: 0.5 },
+    })
+    const f = cropFrame(clip, SLOT)
+    // 只露出一半 → 完整影片要放到兩倍
+    expect(f.full.w).toBeCloseTo(f.view.w * 2)
+    expect(f.full.h).toBeCloseTo(f.view.h * 2)
+    // 往左推 crop.x 個「完整寬」,往上推 crop.y 個「完整高」
+    expect(f.offset.x).toBeCloseTo(-0.25 * f.full.w)
+    expect(f.offset.y).toBeCloseTo(-0.5 * f.full.h)
+  })
+
+  it('cropFrame 放大後的完整影片保持原片長寬比 —— 不會被拉扁', () => {
+    const clip = makeClip({
+      width: 1920,
+      height: 1080,
+      crop: { x: 0.1, y: 0.2, w: 0.3, h: 0.7 },
+    })
+    const f = cropFrame(clip, SLOT)
+    expect(f.full.w / f.full.h).toBeCloseTo(1920 / 1080)
+  })
+
+  it('純音檔沒有尺寸,裁切不該讓它變成 0', () => {
+    const clip = makeClip({ width: 0, height: 0, crop: { x: 0, y: 0, w: 0.5, h: 0.5 } })
+    expectSize(containSize(clip, SLOT), SLOT.w, SLOT.h)
   })
 })

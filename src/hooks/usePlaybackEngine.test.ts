@@ -20,6 +20,7 @@ const clip = (over: Partial<Clip> = {}): Clip => ({
   fps: 30,
   offsetMs: 0,
   transform: { scale: 1, offsetX: 0, offsetY: 0, mirrored: false },
+  crop: null,
   volume: 1,
   envelope: null,
   onset: null,

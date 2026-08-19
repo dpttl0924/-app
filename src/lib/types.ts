@@ -49,6 +49,26 @@ export interface ClipTransform {
   mirrored: boolean
 }
 
+/**
+ * 裁切區域,以**原始影片**的 0..1 正規化座標表示。null = 不裁切。
+ *
+ * 為什麼是來源座標而不是畫面座標:畫面座標會隨輸出比例、對比模式、平移縮放而變,
+ * 存畫面座標的話換一次版面裁切就跑掉了。來源座標講的永遠是「影片的哪一塊」,
+ * 跟它後來被擺在哪、放多大、有沒有鏡像完全無關。
+ */
+export interface CropRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** 完整畫面,等同於沒有裁切 */
+export const FULL_CROP: CropRect = { x: 0, y: 0, w: 1, h: 1 }
+
+/** 裁切框最小邊長(佔原片的比例)。再小就既選不準也看不出內容。 */
+export const MIN_CROP = 0.05
+
 export interface Clip {
   id: ClipId
   url: string
@@ -61,6 +81,8 @@ export interface Clip {
   /** 這段影片在專案時間軸上的起始位置。音訊自動對齊調的就是這個值。 */
   offsetMs: number
   transform: ClipTransform
+  /** 只保留畫面的這一塊,放大填滿格子。null = 用整個畫面。 */
+  crop: CropRect | null
   volume: number
   /** 音量包絡(ENVELOPE_HZ),用於波形顯示與自動對齊 */
   envelope: Float32Array | null

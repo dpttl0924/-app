@@ -14,6 +14,9 @@ export function ClipPanel({ id }: { id: ClipId }) {
   const loading = useProject((s) => s.loading)
   const adjusting = useProject((s) => s.adjustTarget === id)
   const setAdjustTarget = useProject((s) => s.setAdjustTarget)
+  const cropping = useProject((s) => s.cropTarget === id)
+  const setCropTarget = useProject((s) => s.setCropTarget)
+  const setCrop = useProject((s) => s.setCrop)
   const loadClip = useProject((s) => s.loadClip)
   const removeClip = useProject((s) => s.removeClip)
   const resetTransform = useProject((s) => s.resetTransform)
@@ -144,6 +147,33 @@ export function ClipPanel({ id }: { id: ClipId }) {
                 ? '在畫面上拖曳移動、兩指捏合或滾輪縮放。調整期間頁面不會跟著捲動。'
                 : '開啟後可在畫面上直接拖曳與縮放,比拉 slider 快得多。'}
             </p>
+
+            {/* 裁切:只保留畫面的一塊,放大填滿格子。純音檔沒有畫面可裁。 */}
+            {!isAudioOnly(clip) && (
+              <div className="mt-1.5">
+                <div className="flex gap-1">
+                  <Button
+                    variant={cropping ? 'primary' : 'default'}
+                    className="flex-1"
+                    onClick={() => setCropTarget(cropping ? null : id)}
+                  >
+                    {cropping ? '完成裁切' : '裁切畫面'}
+                  </Button>
+                  {clip.crop && (
+                    <Button variant="ghost" onClick={() => setCrop(id, null)}>
+                      重設
+                    </Button>
+                  )}
+                </div>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-white/40">
+                  {cropping
+                    ? '拉四角或邊線框出要留的部分,框內可直接拖曳。裁切期間會顯示完整原片,按「完成裁切」才會放大填滿。'
+                    : clip.crop
+                    ? `已裁切,只留原片的 ${Math.round(clip.crop.w * 100)}% × ${Math.round(clip.crop.h * 100)}%,放大填滿整格。`
+                    : '框出要留的部分,其餘捨棄,留下的會放大填滿這一格。匯出跟著一起套用。'}
+                </p>
+              </div>
+            )}
 
             {/* 滾輪不是每個裝置都有,而且看不到目前倍率會很難回到原點 */}
             <div className="mt-1.5 flex items-center gap-1">
