@@ -1,6 +1,8 @@
 import { ALL_FORMATS, BlobSource, EncodedPacketSink, Input } from 'mediabunny'
 import type { InputVideoTrack } from 'mediabunny'
 import type { ClipId } from '../types'
+// 吸附邏輯與載入時的量測共用一份,兩邊不該對「29.97 算不算 30」有不同意見
+import { snapToCommonRate } from '../frameRate'
 
 /**
  * 這支素材能不能走 WebCodecs 解碼。
@@ -174,30 +176,6 @@ export async function analyseFrameTiming(
     irregularRatio: irregular / deltas.length,
     variable: irregular / deltas.length > VFR_THRESHOLD,
   }
-}
-
-/** 常見的拍攝格率。實測值會有小數誤差,靠過去比較不會被雜訊帶偏。 */
-const COMMON_RATES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 120]
-
-/**
- * 把實測格率吸附到最接近的常見格率。
- *
- * 用平均封包率量出來的值會是 29.9993 之類的數字;直接拿去當輸出格率的話,
- * 累積誤差會讓取樣點慢慢漂過影格邊界 —— 那本身就會造成偶發的重複格。
- */
-function snapToCommonRate(measured: number): number | null {
-  if (!Number.isFinite(measured) || measured <= 0) return null
-  let best: number | null = null
-  let bestDiff = Infinity
-  for (const rate of COMMON_RATES) {
-    const diff = Math.abs(measured - rate)
-    if (diff < bestDiff) {
-      bestDiff = diff
-      best = rate
-    }
-  }
-  // 差太多就相信實測值,別硬套(例如刻意的 15fps 縮時)
-  return bestDiff <= 1.5 ? best : Math.round(measured * 1000) / 1000
 }
 
 function describeUndecodable(codec: string | null): string {

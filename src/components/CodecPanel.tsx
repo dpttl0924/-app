@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { detectCapabilities, type Capabilities } from '../lib/webcodecs/capabilities'
+import { useProject } from '../store/useProject'
+import type { Capabilities } from '../lib/webcodecs/capabilities'
 import { Panel } from './ui'
 
 /**
@@ -11,16 +12,53 @@ import { Panel } from './ui'
  */
 export function CodecPanel() {
   const [caps, setCaps] = useState<Capabilities | null>(null)
+  const [failed, setFailed] = useState(false)
+  // 還沒有素材就沒有東西可以匯出,這個面板也還沒有話要說
+  const hasClips = useProject((s) => Boolean(s.clips.a || s.clips.b))
 
+  /*
+    偵測本身要載入 mediabunny(整包的八成)。原本掛在 mount 上,等於每個
+    開啟網頁的人都先付這筆下載 —— 但這裡的資訊要等到有素材才有意義。
+
+    綁在「載入了素材」而不是「按下匯出」:這個面板的價值是**事先**警告
+    「你的裝置只編得出 WebM,iPhone 打不開」。等按下匯出才講就太晚了,
+    對齊和裁切的功夫已經花完了。
+  */
   useEffect(() => {
+    if (!hasClips) return
     let alive = true
-    void detectCapabilities().then((c) => {
-      if (alive) setCaps(c)
-    })
+    void import('../lib/webcodecs/capabilities')
+      .then((m) => m.detectCapabilities())
+      .then((c) => {
+        if (alive) setCaps(c)
+      })
+      .catch(() => {
+        if (alive) setFailed(true)
+      })
     return () => {
       alive = false
     }
-  }, [])
+  }, [hasClips])
+
+  if (!hasClips) {
+    return (
+      <Panel title="編碼能力">
+        <p className="text-[11px] leading-relaxed text-white/35">
+          載入影片後偵測這台裝置編得出什麼格式。
+        </p>
+      </Panel>
+    )
+  }
+
+  if (failed) {
+    return (
+      <Panel title="編碼能力">
+        <p className="text-[11px] leading-relaxed text-amber-300">
+          載不到編碼模組,匯出會走即時錄製。檢查網路後重新整理可以再試一次。
+        </p>
+      </Panel>
+    )
+  }
 
   if (!caps) {
     return (

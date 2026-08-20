@@ -2,6 +2,7 @@
 import { alignOnsets, analyzeAudio } from '../lib/audio'
 import { projectDuration } from '../lib/layout'
 import { playbackClock } from '../lib/playbackClock'
+import { DEFAULT_FPS, measureClipFps } from '../lib/frameRate'
 import { projectToContent, type TimelineMap } from '../lib/timeline'
 import { describeLoadFailure } from '../lib/mediaSupport'
 import { MAX_BPM, MIN_BPM, MIN_CONFIDENCE, detectTempo, type TempoEstimate } from '../lib/tempo'
@@ -151,6 +152,14 @@ interface ProjectState {
  * 讀取檔案的長度與畫面尺寸。純音檔也是走同一個函式 ——
  * `<video>` 讀純音檔完全沒問題,只是 videoWidth/videoHeight 會回傳 0,
  * 這正是 `isAudioOnly()` 用來判斷的依據,不需要額外檢查副檔名或 MIME type。
+ */
+/**
+ * 讀取檔案的長度與畫面尺寸。純音檔也是走同一個函式 ——
+ * `<video>` 讀純音檔完全沒問題,只是 videoWidth/videoHeight 會回傳 0,
+ * 這正是 `isAudioOnly()` 用來判斷的依據,不需要額外檢查副檔名或 MIME type。
+ *
+ * 格率不在這裡量:那需要真的播一小段,而且分頁在背景時要等回到前景,
+ * 擋在載入路徑上會讓人以為當掉了。改成載入完再背景補(見 loadClip)。
  */
 function probeMedia(url: string, fileName: string) {
   return new Promise<{ durationMs: number; width: number; height: number }>(
@@ -345,7 +354,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
         durationMs: meta.durationMs,
         width: meta.width,
         height: meta.height,
-        fps: 30,
+        // 先放預設值,載入完再背景實測補上(見下面)。面板上的選單可以手動覆寫。
+        fps: DEFAULT_FPS,
         offsetMs: 0,
         transform: { ...DEFAULT_TRANSFORM },
         crop: null,
@@ -363,6 +373,21 @@ export const useProject = create<ProjectState>()((set, get) => ({
           syncStrained: false,
         }
       })
+
+      /*
+        格率背景實測。不擋 UI —— 量測要真的播一小段(見 frameRate.ts),
+        而且分頁在背景時 Chrome 會把無聲影片暫停,得等回到前景。
+
+        補回去之前要再確認一次:素材可能已經被換掉,使用者也可能自己先改過。
+        兩種情況都不該被這個遲到的結果蓋掉。
+      */
+      void measureClipFps(url)
+        .catch(() => null)
+        .then((fps) => {
+          if (!fps) return
+          const cur = get().clips[id]
+          if (cur?.url === url && cur.fps === DEFAULT_FPS) get().setFps(id, fps)
+        })
 
       // 音訊分析比較慢,不擋 UI。分析完波形才會出現在時間軸上。
       try {
@@ -635,7 +660,18 @@ export const useProject = create<ProjectState>()((set, get) => ({
 
   stepFrame: (dir) => {
     const s = get()
-    const fps = s.clips.a?.fps ?? s.clips.b?.fps ?? 30
+    /*
+      取兩支裡**最細**的那一格,而不是永遠看 A。
+
+      舊版是 `clips.a?.fps ?? clips.b?.fps`,只要 A 有載入就完全不看 B ——
+      在 B 的面板改那個選單看起來沒有作用,但標籤寫著「逐幀步進用的 fps」。
+
+      為什麼是最大值:30 配 24 時,用 24 的步長會讓 A 每按一下跳過一張,
+      用 30 的步長則是 B 偶爾停在同一張。逐格比對舞蹈動作時,
+      「停在同一張」無所謂,「跳過一張」可能就錯過要看的那個瞬間。
+    */
+    const fps =
+      Math.max(s.clips.a?.fps ?? 0, s.clips.b?.fps ?? 0) || DEFAULT_FPS
     set({ playing: false })
     // 讀時鐘而不是 s.currentMs —— 後者是 10Hz 的節流鏡像,
     // 播放中按逐幀的話最多會差 100ms,等於跳了三格

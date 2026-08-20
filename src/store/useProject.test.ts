@@ -10,6 +10,7 @@ import {
 import { projectToContent, relativeToCountIn } from '../lib/timeline'
 import { MAX_BPM, MIN_BPM } from '../lib/tempo'
 import { playbackClock } from '../lib/playbackClock'
+import { DEFAULT_FPS } from '../lib/frameRate'
 import { DEFAULT_TRANSFORM, type Clip, type ClipId } from '../lib/types'
 
 function makeClip(id: ClipId, patch: Partial<Clip> = {}): Clip {
@@ -451,5 +452,56 @@ describe('applyLag', () => {
     trimTo(5000, 30_000)
     state().applyLag(2500)
     expect(state().clips.b!.offsetMs - state().clips.a!.offsetMs).toBe(2500)
+  })
+})
+
+describe('逐幀步進的步長', () => {
+  const stepMs = () => {
+    const before = playbackClock.currentMs
+    state().stepFrame(1)
+    return playbackClock.currentMs - before
+  }
+
+  it('兩支同格率時就是那一格的長度', () => {
+    load({ fps: 30 }, { fps: 30 })
+    expect(stepMs()).toBeCloseTo(1000 / 30, 6)
+  })
+
+  it('格率不同時取最細的那一格 —— 寧可停在同一張,也不要跳過一張', () => {
+    // 用 24 的步長會讓 30fps 那支每按一下跳過一張,逐格比對時就漏掉畫面了
+    load({ fps: 24 }, { fps: 30 })
+    expect(stepMs()).toBeCloseTo(1000 / 30, 6)
+  })
+
+  it('B 比較細的時候也算數 —— 舊版只看 A,在 B 面板改設定等於沒用', () => {
+    load({ fps: 30 }, { fps: 60 })
+    expect(stepMs()).toBeCloseTo(1000 / 60, 6)
+  })
+
+  it('只有 B 有素材時就用 B 的', () => {
+    load({ fps: 30 }, { fps: 25 })
+    useProject.setState({ clips: { a: null, b: state().clips.b } })
+    expect(stepMs()).toBeCloseTo(1000 / 25, 6)
+  })
+
+  it('沒有素材時退回預設值,不會除以零', () => {
+    load()
+    useProject.setState({ clips: { a: null, b: null }, durationMs: 10_000 })
+    expect(stepMs()).toBeCloseTo(1000 / DEFAULT_FPS, 6)
+  })
+
+  it('步進會停止播放 —— 逐格看的時候不該還在跑', () => {
+    load()
+    useProject.setState({ playing: true })
+    state().stepFrame(1)
+    expect(state().playing).toBe(false)
+  })
+
+  it('往回步進是對稱的', () => {
+    load({ fps: 30 }, { fps: 30 })
+    useProject.setState({ currentMs: 5000 })
+    playbackClock.currentMs = 5000
+    state().stepFrame(-1)
+    expect(playbackClock.currentMs).toBeCloseTo(5000 - 1000 / 30, 6)
   })
 })

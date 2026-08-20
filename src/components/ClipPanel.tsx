@@ -5,7 +5,13 @@ import { MAX_CLIP_SCALE, MIN_CLIP_SCALE, isAudioOnly, type ClipId } from '../lib
 import { MEDIA_ACCEPT } from '../lib/mediaSupport'
 import { Button, Field, Panel, Slider, inputClass } from './ui'
 
-const FPS_OPTIONS = [24, 25, 30, 50, 60]
+/**
+ * 手動覆寫用的選項。載入時會實測並自動填入,這裡只是量錯或量不出來時的退路。
+ *
+ * 含 NTSC 那組小數(23.976 / 29.97 / 59.94):實測值會被吸附到這些數字上,
+ * 選單裡沒有的話,量到 29.97 的素材會讓 <select> 顯示空白。
+ */
+const FPS_OPTIONS = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60, 120]
 /** 每按一次縮放的倍率。10% 夠細,又不會按到手痠。 */
 const ZOOM_STEP = 1.1
 
@@ -116,6 +122,7 @@ export function ClipPanel({ id }: { id: ClipId }) {
             <p className="mt-1 text-[11px] leading-relaxed text-white/35">
               粗調直接在時間軸上拖這支影片的色條,這裡是逐格微調(
               {clip.fps}fps,一格 {(1000 / clip.fps).toFixed(0)}ms)。
+              影格率是載入時實測的,量錯的話可以在下面改。
             </p>
           </Field>
 
@@ -217,17 +224,20 @@ export function ClipPanel({ id }: { id: ClipId }) {
           />
 
           <div className="flex items-end gap-2">
-            <Field label="逐幀步進用的 fps">
+            <Field label="影格率(自動偵測)">
               <select
                 className={inputClass}
                 value={clip.fps}
                 onChange={(e) => setFps(id, Number(e.target.value))}
               >
-                {FPS_OPTIONS.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
+                {/* 實測值可能落在選項外(例如刻意的 15fps 縮時),補進去才不會顯示空白 */}
+                {[...new Set([...FPS_OPTIONS, clip.fps])]
+                  .sort((a, b) => a - b)
+                  .map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
               </select>
             </Field>
             {/* 同樣用 label 而不是 JS 觸發 */}

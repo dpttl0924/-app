@@ -1,6 +1,4 @@
 import {
-  Mp4OutputFormat,
-  WebMOutputFormat,
   canEncodeVideo,
   canEncodeAudio,
   type AudioCodec,
@@ -127,12 +125,11 @@ function pickChoice(
   }
 }
 
-/**
- * WebM 用 `WebMOutputFormat` 而不是 `MkvOutputFormat`。
- *
- * WebM 是 Matroska 的子集,兩者共用容器結構,所以 Mkv 寫出來的東西「看起來」也能播,
- * 但檔案被標成 .webm / video/webm 之後,嚴格檢查 DocType 的播放器會直接拒絕。
- */
-export function outputFormatFor(container: OutputContainer) {
-  return container === 'mp4' ? new Mp4OutputFormat() : new WebMOutputFormat()
-}
+/*
+  outputFormatFor() 搬到 videoExport.ts 了。
+
+  它要 import 封裝器(Mp4OutputFormat / WebMOutputFormat),而封裝器會把
+  mediabunny 的大半拉進這個模組。這個檔案只是「偵測能不能編」,一載入素材
+  就會跑;真正需要封裝器的是按下匯出之後。留在這裡的話,只是看一眼
+  編碼能力就得先下載整個 muxer。
+*/

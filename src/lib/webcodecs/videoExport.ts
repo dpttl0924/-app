@@ -2,10 +2,16 @@ import {
   AudioBufferSource,
   BufferTarget,
   CanvasSource,
+  Mp4OutputFormat,
   Output,
   QUALITY_HIGH,
+  WebMOutputFormat,
 } from 'mediabunny'
-import { detectCapabilities, outputFormatFor, type CodecChoice } from './capabilities'
+import {
+  detectCapabilities,
+  type CodecChoice,
+  type OutputContainer,
+} from './capabilities'
 import { createFrameSource, type FrameSource } from './frameSource'
 import { composeTimeline, type CompositeTrack } from './composite'
 import { probeDecodability, summariseBlockers, summariseRates } from './decodeProbe'
@@ -14,6 +20,7 @@ import { projectToContent } from '../timeline'
 import { renderMixedAudio } from '../audioExport'
 import { playRange, timelineMap, useProject } from '../../store/useProject'
 import { ASPECT_SIZES, isAudioOnly, type ClipId } from '../types'
+import { DEFAULT_FPS } from '../frameRate'
 
 /**
  * WebCodecs 匯出。
@@ -60,6 +67,18 @@ export class WebCodecsUnavailableError extends Error {
 
 const makeEven = (n: number) => Math.max(2, Math.round(n / 2) * 2)
 
+/**
+ * WebM 用 `WebMOutputFormat` 而不是 `MkvOutputFormat`。
+ *
+ * WebM 是 Matroska 的子集,兩者共用容器結構,所以 Mkv 寫出來的東西「看起來」也能播,
+ * 但檔案被標成 .webm / video/webm 之後,嚴格檢查 DocType 的播放器會直接拒絕。
+ *
+ * 放在這裡而不是 capabilities.ts:封裝器很大,而且只有真的要輸出檔案時才需要。
+ */
+export function outputFormatFor(container: OutputContainer) {
+  return container === 'mp4' ? new Mp4OutputFormat() : new WebMOutputFormat()
+}
+
 export async function exportWithWebCodecs(
   opts: WebCodecsExportOptions = {},
 ): Promise<WebCodecsExportResult> {
@@ -105,6 +124,22 @@ export async function exportWithWebCodecs(
 
   const blocked = summariseBlockers(probes)
   if (blocked) throw new WebCodecsUnavailableError(blocked)
+
+  /*
+    順手把量到的格率寫回素材。
+
+    這裡讀到的值來自容器裡的封包時間戳,比載入時用 requestVideoFrameCallback
+    實測的更可靠 —— 而且在沒有 rVFC 的瀏覽器上,那條路根本量不出東西。
+    寫回去之後,逐幀步進的步長在第一次匯出後就自動校正了。
+
+    只在還停在預設值時覆蓋:使用者自己在面板選過的,不該被默默改掉。
+    放在編碼開始前,所以就算後面失敗了,這個校正仍然留得住。
+  */
+  for (const probe of probes) {
+    if (!probe.fps) continue
+    const clip = useProject.getState().clips[probe.id]
+    if (clip && clip.fps === DEFAULT_FPS) useProject.getState().setFps(probe.id, probe.fps)
+  }
 
   // 要解碼的內容區間。範圍的起訖是專案時間,素材吃的是內容時間。
   const contentStartMs = projectToContent(range.startMs, map)

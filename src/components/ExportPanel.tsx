@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { downloadBlob, exportComposite } from '../lib/export'
-import { exportWithWebCodecs } from '../lib/webcodecs/videoExport'
 import { exportAudio } from '../lib/audioExport'
 import { playRange, useProject } from '../store/useProject'
 import { formatSeconds, formatTime } from '../lib/format'
@@ -31,6 +30,8 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
   const [note, setNote] = useState('')
   /** 退回即時錄製的原因 —— 匯出還是成功了,所以不是 error */
   const [warn, setWarn] = useState('')
+  /** 下載編碼器那段沒有進度可回報,但也不能讓按鈕看起來卡住 */
+  const [stage, setStage] = useState('')
 
   const runAudio = async () => {
     setAudioBusy(true)
@@ -59,7 +60,19 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
     setProgress(0)
     setNote('')
     setWarn('')
+    setStage('準備編碼器…')
     try {
+      /*
+        WebCodecs 這條路連著 mediabunny(解封裝 + 封裝),minify 後 648KB、
+        佔整包的八成以上,但只有真的按下匯出才用得到。靜態 import 的話
+        每個開啟網頁的人都要先下載完才能操作 —— 手機優先的專案不該這樣。
+        改成動態載入,首屏就只剩 UI 與播放引擎。
+
+        載不到的時候會掉進下面的 catch,自動退回即時錄製 —— 跟編碼器不支援
+        是同一種處理,使用者仍然拿得到檔案。
+      */
+      const { exportWithWebCodecs } = await import('../lib/webcodecs/videoExport')
+      setStage('')
       const result = await exportWithWebCodecs({ scale, onProgress: setProgress })
       downloadBlob(result.blob, `dance-compare-${Date.now()}.${result.extension}`)
       const speedup = range.durationMs / result.elapsedMs
@@ -69,6 +82,7 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
           (result.note ? `。${result.note}` : ''),
       )
     } catch (err) {
+      setStage('')
       const reason = err instanceof Error ? err.message : '未知原因'
       setWarn(`${reason}。改用即時錄製,需要一直開著這個畫面到跑完。`)
       try {
@@ -85,6 +99,7 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
     } finally {
       setBusy(false)
       setProgress(0)
+      setStage('')
     }
   }
 
@@ -111,7 +126,7 @@ export function ExportPanel({ refs }: { refs: VideoRefs }) {
         disabled={durationMs <= 0 || busy}
         onClick={() => void run()}
       >
-        {busy ? `編碼中 ${(progress * 100).toFixed(0)}%` : '匯出影片'}
+        {busy ? stage || `編碼中 ${(progress * 100).toFixed(0)}%` : '匯出影片'}
       </Button>
 
       {busy && (
